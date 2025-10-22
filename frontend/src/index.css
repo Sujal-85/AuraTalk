@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ...your other styles... */
+
+/* Hide scrollbars but maintain scroll functionality */
+.custom-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* Internet Explorer 10+ */
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  display: none; /* Safari and Chrome */
+}
+
+/* Hide scrollbars globally for all elements */
+* {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* Internet Explorer 10+ */
+}
+
+*::-webkit-scrollbar {
+  display: none; /* Safari and Chrome */
+}
+
+/* Alternative: Hide scrollbars but show on hover (optional) */
+.hover-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hover-scrollbar::-webkit-scrollbar {
+  width: 0;
+  background: transparent;
+}
+
+.hover-scrollbar:hover::-webkit-scrollbar {
+  width: 6px;
+}
+
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+
+.hover-scrollbar:hover::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+Feedback submitted
+Me
+
+.lucide {
+  color: #1a011a;
+  width: 56px;
+  height: 56px;
+  stroke-width: 1px;
+}
+.lucide * {
+  vector-effect: non-scaling-stroke;
+} 
