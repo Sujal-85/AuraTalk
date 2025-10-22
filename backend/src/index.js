@@ -25,7 +25,9 @@ app.use(cookieParser());
 
 app.use(
     cors({
-        origin: process.env.CLIENT_ORIGIN || ["http://localhost:5173", "http://localhost:5174"],
+        origin: (process.env.CLIENT_ORIGIN || "http://localhost:5173,http://localhost:5174,https://aura-talk.vercel.app")
+            .split(",")
+            .map((o) => o.trim()),
         methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
         credentials: true,
     })

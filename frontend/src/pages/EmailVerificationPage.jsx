@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore';
+import { axiosInstance } from '../lib/axios';
 import { FaEnvelope, FaCheckCircle, FaExclamationTriangle, FaPaperPlane } from 'react-icons/fa';
 
 const EmailVerificationPage = () => {
@@ -47,23 +48,13 @@ const EmailVerificationPage = () => {
 
   const verifyEmail = async (token) => {
     try {
-      const response = await fetch(`http://localhost:5001/api/auth/verify-email/${token}`);
-      const data = await response.json();
-      
-      if (response.ok) {
-        setVerificationStatus('success');
-        setEmailInput(data.user.email);
-        // Refresh auth state to update verification status
-        try { 
-          await checkAuth(); 
-          // Force a small delay to ensure state is updated
-          setTimeout(() => {
-            checkAuth();
-          }, 1000);
-        } catch {}
-      } else {
-        setVerificationStatus('error');
-      }
+      const { data } = await axiosInstance.get(`/auth/verify-email/${token}`);
+      setVerificationStatus('success');
+      setEmailInput(data.user.email);
+      try { 
+        await checkAuth();
+        setTimeout(() => { checkAuth(); }, 1000);
+      } catch {}
     } catch (error) {
       console.error('Error verifying email:', error);
       setVerificationStatus('error');

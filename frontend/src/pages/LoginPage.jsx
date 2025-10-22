@@ -6,6 +6,12 @@ import { Link } from 'react-router-dom';
 import { Eye, EyeOff, Loader2, Lock, Mail, MessageSquare } from 'lucide-react';
 import { useThemeStore } from '../store/useThemeStore';
 
+const BACKEND_ORIGIN =
+  import.meta.env.VITE_BACKEND_ORIGIN ||
+  (import.meta.env.MODE === "development"
+    ? "http://localhost:5001"
+    : "https://auratalk.onrender.com");
+
 const LoginPage = () => {
  
   const [showPassword, setShowPassword] = useState(false);
@@ -121,7 +127,7 @@ const LoginPage = () => {
             <button
               type="button"
               className="btn btn-outline w-full flex items-center justify-center gap-2 mt-4 hover:btn-primary/20"
-              onClick={() => window.location.href = 'http://localhost:5001/api/auth/google'}
+              onClick={() => window.location.href = `${BACKEND_ORIGIN}/api/auth/google`}
             >
               <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" className="w-5 h-5" />
               Continue with Google

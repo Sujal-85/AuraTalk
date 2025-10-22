@@ -4,7 +4,11 @@ import toast from "react-hot-toast";
 import {io} from "socket.io-client";
 import { useChatStore } from "./useChatStore";
 
-const Base_url = "http://localhost:5001";
+const BACKEND_ORIGIN =
+  import.meta.env.VITE_BACKEND_ORIGIN ||
+  (import.meta.env.MODE === "development"
+    ? "http://localhost:5001"
+    : "https://auratalk.onrender.com");
 export const useAuthStore = create((set,get) => ({
 
     authUser: null,
@@ -239,7 +243,8 @@ export const useAuthStore = create((set,get) => ({
         const {authUser} = get();
         if (!authUser || !authUser._id || get().socket?.connected) return;
         
-        const socket = io(Base_url,{
+        const socket = io(BACKEND_ORIGIN,{
+            withCredentials: true,
             query:{
                 userId: authUser._id,
             }

@@ -1,6 +1,7 @@
 import React from 'react';
 import { useChatStore } from '../store/useChatStore';
 import { X } from 'lucide-react';
+import { axiosInstance } from '../lib/axios';
 
 const OutgoingInvitesModal = ({ onClose }) => {
   const { outgoingInvites, users, sendInvitation } = useChatStore();
@@ -8,8 +9,7 @@ const OutgoingInvitesModal = ({ onClose }) => {
 
   const handleCancel = async (inviteId) => {
     try {
-      await fetch(`/api/invitations/${inviteId}`, { method: 'DELETE', credentials: 'include' });
-      // refresh outgoing invites in store by removing locally
+      await axiosInstance.delete(`/invitations/${inviteId}`);
       useChatStore.setState((state) => {
         const next = { ...state.outgoingInvites };
         for (const key of Object.keys(next)) {

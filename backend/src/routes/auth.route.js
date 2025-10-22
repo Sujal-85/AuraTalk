@@ -62,13 +62,20 @@ router.delete("/wallpaper-library/:id", protectRoute, removeWallpaperFromLibrary
 
 router.get("/google", passport.authenticate("google", { scope: ["profile", "email"] }));
 
-router.get("/google/callback", passport.authenticate("google", { session: false, failureRedirect: "/login" }), (req, res) => {
-  // Successful authentication, issue JWT and redirect or respond with token
-  // You can customize this logic as needed
-  const user = req.user;
-  // generateToken is your JWT function
-  generateToken(user._id, res);
-  res.redirect("http://localhost:5173"); // Redirect to frontend after login
+router.get(
+  "/google/callback",
+  passport.authenticate("google", { session: false, failureRedirect: "/api/auth/google/failure" }),
+  (req, res) => {
+    const user = req.user;
+    generateToken(user._id, res);
+    const redirectUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    res.redirect(redirectUrl);
+  }
+);
+
+router.get("/google/failure", (req, res) => {
+  const redirectUrl = (process.env.FRONTEND_URL || "http://localhost:5173") + "/login?error=oauth_failed";
+  res.redirect(redirectUrl);
 });
 
 export default router;
