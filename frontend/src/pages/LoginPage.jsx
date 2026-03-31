@@ -6,12 +6,6 @@ import { Link } from 'react-router-dom';
 import { Eye, EyeOff, Loader2, Lock, Mail, MessageSquare } from 'lucide-react';
 import { useThemeStore } from '../store/useThemeStore';
 
-const BACKEND_ORIGIN =
-  import.meta.env.VITE_BACKEND_ORIGIN ||
-  (import.meta.env.MODE === "development"
-    ? "http://localhost:5001"
-    : "https://auratalk.onrender.com");
-
 const LoginPage = () => {
  
   const [showPassword, setShowPassword] = useState(false);
@@ -20,7 +14,7 @@ const LoginPage = () => {
     password: "",
   });
 
-  const { login, isLoggingIn } = useAuthStore();
+  const { login, isLoggingIn, loginWithGoogle } = useAuthStore();
   const { theme } = useThemeStore();
 
   const handleSubmit = (e) => {
@@ -31,6 +25,10 @@ const LoginPage = () => {
     if (!formData.password.trim()) return toast.error("Password is required");
     login(formData);
   };
+  const handleGoogle = () => {
+    loginWithGoogle();
+  };
+
   return (
     <div data-theme={theme} className="h-screen grid mt-8 lg:grid-cols-2">
       {/* Left Side - Form */}
@@ -127,7 +125,7 @@ const LoginPage = () => {
             <button
               type="button"
               className="btn btn-outline w-full flex items-center justify-center gap-2 mt-4 hover:btn-primary/20"
-              onClick={() => window.location.href = `${BACKEND_ORIGIN}/api/auth/google`}
+              onClick={handleGoogle}
             >
               <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" className="w-5 h-5" />
               Continue with Google

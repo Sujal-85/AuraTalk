@@ -553,28 +553,30 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
     
-    filteredCallHistory.forEach(call => {
-      const callDate = new Date(call.startedAt || call.createdAt);
-      let dateKey;
-      
-      if (callDate.toDateString() === today.toDateString()) {
-        dateKey = 'Today';
-      } else if (callDate.toDateString() === yesterday.toDateString()) {
-        dateKey = 'Yesterday';
-      } else {
-        dateKey = callDate.toLocaleDateString('en-US', { 
-          year: 'numeric', 
-          month: 'short', 
-          day: 'numeric' 
-        });
-      }
-      
-      if (!groups[dateKey]) {
-        groups[dateKey] = [];
-      }
-      
-      groups[dateKey].push(call);
-    });
+    if (Array.isArray(filteredCallHistory)) {
+      filteredCallHistory.forEach(call => {
+        const callDate = new Date(call.startedAt || call.createdAt);
+        let dateKey;
+        
+        if (callDate.toDateString() === today.toDateString()) {
+          dateKey = 'Today';
+        } else if (callDate.toDateString() === yesterday.toDateString()) {
+          dateKey = 'Yesterday';
+        } else {
+          dateKey = callDate.toLocaleDateString('en-US', { 
+            year: 'numeric', 
+            month: 'short', 
+            day: 'numeric' 
+          });
+        }
+        
+        if (!groups[dateKey]) {
+          groups[dateKey] = [];
+        }
+        
+        groups[dateKey].push(call);
+      });
+    }
     
     return groups;
   }, [filteredCallHistory]);

@@ -283,10 +283,11 @@ const Navbar = () => {
               {/* Camera button */}
               <button
                 className="p-2 rounded-full hover:bg-base-200"
-                onClick={() => setShowCamera(true)}
-                aria-label="Open camera"
+                onClick={() => { navigate('/settings')
+                setMobileMenuOpen(false); }}
+                aria-label="Open Settings"
               >
-                <Camera className="w-6 h-6" />
+                <Settings className="w-6 h-6" />
               </button>
               {/* Kebab menu */}
               <button
@@ -319,20 +320,68 @@ const Navbar = () => {
 
       {/* Camera Modal */}
       {showCamera && (
-        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black bg-opacity-70">
-          <div className="bg-base-100 rounded-lg p-8 flex flex-col items-center  w-full max-w-xs relative shadow-2xl">
-            <button className="absolute top-2 right-2 text-xl" onClick={handleCloseCamera}>&times;</button>
-            {!capturedImage ? (
-              <>
-                <video ref={videoRef} autoPlay playsInline className="w-full rounded mb-2" />
-                <button className="btn btn-primary w-full" onClick={handleCapture}>Capture & Save</button>
-              </>
-            ) : (
-              <>
-                <img src={capturedImage} alt="Captured" className="w-full rounded mb-2" />
-                <button className="btn btn-primary w-full" onClick={handleCloseCamera}>Close</button>
-              </>
-            )}
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/80 backdrop-blur-md" 
+            onClick={handleCloseCamera}
+          />
+          
+          {/* Modal Content */}
+          <div className="relative bg-base-100 rounded-3xl p-6 flex flex-col items-center w-full max-w-[400px] shadow-2xl border border-base-300 animate-in fade-in zoom-in duration-200">
+            <button 
+              className="absolute top-4 right-4 p-2 rounded-full hover:bg-base-200 transition-colors z-10" 
+              onClick={handleCloseCamera}
+            >
+              <X className="w-6 h-6" />
+            </button>
+            
+            <div className="w-full">
+              <h3 className="text-2xl font-bold text-center mb-6">Take a Photo</h3>
+              
+              {!capturedImage ? (
+                <div className="space-y-6">
+                  <div className="relative aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-base-300">
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      className="w-full h-full object-cover" 
+                    />
+                  </div>
+                  <button 
+                    className="btn btn-primary w-full h-14 text-lg font-bold rounded-2xl shadow-lg hover:shadow-primary/20 transition-all" 
+                    onClick={handleCapture}
+                  >
+                    Capture & Save
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="relative aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-base-300">
+                    <img 
+                      src={capturedImage} 
+                      alt="Captured" 
+                      className="w-full h-full object-cover" 
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button 
+                      className="btn btn-ghost border-base-300 w-full h-12 rounded-xl" 
+                      onClick={() => setCapturedImage(null)}
+                    >
+                      Retake
+                    </button>
+                    <button 
+                      className="btn btn-primary w-full h-12 rounded-xl" 
+                      onClick={handleCloseCamera}
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
             <canvas ref={canvasRef} className="hidden" />
           </div>
         </div>

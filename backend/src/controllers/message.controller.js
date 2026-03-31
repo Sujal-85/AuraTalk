@@ -1,7 +1,7 @@
 import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import Invitation from "../models/invitation.model.js";
-import cloudinary from "../lib/cloudinary.js";
+import { uploadToFirebase } from "../lib/firebaseStorage.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
 import { fetchArchivedDirectMessages, fetchArchivedGroupMessages } from "../lib/archiver.js";
 
@@ -11,27 +11,30 @@ export const getUsersForSidebar = async (req, res) => {
     const users = await User.find({ _id: { $ne: loggedInUserId } }).select("-password");
 
     // For each user, get the last message exchanged with the logged-in user
+    // For each user, get the last message and unread count in parallel
     const usersWithLastMessage = await Promise.all(
       users.map(async (user) => {
-        const lastMsg = await Message.findOne({
-          $or: [
-            { senderId: loggedInUserId, receiverId: user._id },
-            { senderId: user._id, receiverId: loggedInUserId },
-          ],
-          isDeletedForEveryone: { $ne: true },
-          deletedFor: { $ne: loggedInUserId }
-        })
-          .sort({ createdAt: -1 })
-          .lean();
-
-        // Count unread messages from this user to the logged-in user
-        const unreadCount = await Message.countDocuments({
-          senderId: user._id,
-          receiverId: loggedInUserId,
-          readBy: { $ne: loggedInUserId },
-          isDeletedForEveryone: { $ne: true },
-          deletedFor: { $ne: loggedInUserId }
-        });
+        const [lastMsg, unreadCount] = await Promise.all([
+          Message.findOne({
+            $or: [
+              { senderId: loggedInUserId, receiverId: user._id },
+              { senderId: user._id, receiverId: loggedInUserId },
+            ],
+            isDeletedForEveryone: { $ne: true },
+            deletedFor: { $ne: loggedInUserId }
+          })
+            .select("text image video audio document fileName createdAt")
+            .sort({ createdAt: -1 })
+            .lean(),
+          
+          Message.countDocuments({
+            senderId: user._id,
+            receiverId: loggedInUserId,
+            readBy: { $ne: loggedInUserId },
+            isDeletedForEveryone: { $ne: true },
+            deletedFor: { $ne: loggedInUserId }
+          })
+        ]);
 
         let lastMessage = null;
         if (lastMsg) {
@@ -92,6 +95,7 @@ export const getMessages = async (req, res) => {
     }
 
     let dbMessages = await Message.find(query)
+      .select("-__v -updatedAt")
       .sort({ createdAt: -1, _id: -1 })
       .limit(limit + 1); // Fetch one extra to check for more
 
@@ -153,7 +157,7 @@ export const getMessages = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
   try {
-    const { text, image, video, audio, document, fileName, replyTo: replyToId, replyToText: clientReplyToText, replyToSenderName: clientReplyToSenderName } = req.body;
+    const { text, image, video, audio, document, fileName, replyTo: replyToId, replyToText: clientReplyToText, replyToSenderName: clientReplyToSenderName, statusReply } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
 
@@ -182,29 +186,29 @@ export const sendMessage = async (req, res) => {
     const uploadPromises = [];
     if (image) {
       uploadPromises.push(
-        cloudinary.uploader.upload(image).then((uploadResponse) => {
-          imageUrl = uploadResponse.secure_url;
+        uploadToFirebase(image, "images").then((url) => {
+          imageUrl = url;
         })
       );
     }
     if (video) {
       uploadPromises.push(
-        cloudinary.uploader.upload(video, { resource_type: "video" }).then((uploadResponse) => {
-          videoUrl = uploadResponse.secure_url;
+        uploadToFirebase(video, "videos").then((url) => {
+          videoUrl = url;
         })
       );
     }
     if (audio) {
       uploadPromises.push(
-        cloudinary.uploader.upload(audio, { resource_type: "video" }).then((uploadResponse) => {
-          audioUrl = uploadResponse.secure_url;
+        uploadToFirebase(audio, "audio").then((url) => {
+          audioUrl = url;
         })
       );
     }
     if (document) {
       uploadPromises.push(
-        cloudinary.uploader.upload(document, { resource_type: "raw" }).then((uploadResponse) => {
-          documentUrl = uploadResponse.secure_url;
+        uploadToFirebase(document, "documents").then((url) => {
+          documentUrl = url;
           documentName = fileName;
         })
       );
@@ -240,6 +244,7 @@ export const sendMessage = async (req, res) => {
       replyTo,
       replyToText,
       replyToSenderName,
+      statusReply: statusReply || null,
     });
 
     await newMessage.save();

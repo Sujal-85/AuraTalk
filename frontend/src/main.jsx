@@ -8,7 +8,7 @@ import { registerSW } from 'virtual:pwa-register'
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
-    <App/>
+      <App/>
     </BrowserRouter>
   </StrictMode>,
 )

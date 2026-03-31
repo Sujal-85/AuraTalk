@@ -58,5 +58,29 @@ export const useStatusStore = create(persist((set, get) => ({
     } catch (e) {
       set({ error: e?.response?.data?.message || e.message });
     }
-  }
+  },
+
+  likeStatus: async (id) => {
+    try {
+      const { data } = await axiosInstance.post(`/status/${id}/like`);
+      const update = (list) => list.map(s => s._id === id ? { ...s, likes: data.likes } : s);
+      set({ feedStatuses: update(get().feedStatuses), myStatuses: update(get().myStatuses) });
+      return data;
+    } catch (e) {
+      set({ error: e?.response?.data?.message || e.message });
+    }
+  },
+
+  commentStatus: async (id, text) => {
+    try {
+      const { data } = await axiosInstance.post(`/status/${id}/comment`, { text });
+      const update = (list) => list.map(s =>
+        s._id === id ? { ...s, comments: [...(s.comments || []), data.comment] } : s
+      );
+      set({ feedStatuses: update(get().feedStatuses), myStatuses: update(get().myStatuses) });
+      return data.comment;
+    } catch (e) {
+      set({ error: e?.response?.data?.message || e.message });
+    }
+  },
 }), { name: 'status-store' }));

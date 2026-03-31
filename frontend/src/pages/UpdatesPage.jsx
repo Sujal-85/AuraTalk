@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStatusStore } from '../store/useStatusStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { Camera, Plus, Trash2, Upload } from 'lucide-react';
+import StatusViewer from '../components/StatusViewer';
 
 function timeAgo(dateStr) {
   const d = new Date(dateStr);
@@ -21,6 +22,7 @@ const UpdatesPage = () => {
   const { myStatuses, feedStatuses, isLoading, fetchFeed, fetchMine, postTextStatus, postMediaStatus, deleteStatus } = useStatusStore();
   const [text, setText] = useState('');
   const fileInputRef = useRef(null);
+  const [viewer, setViewer] = useState(null); // { statuses, initialIndex }
 
   useEffect(() => {
     fetchMine();
@@ -41,8 +43,18 @@ const UpdatesPage = () => {
     e.target.value = '';
   };
 
+  const openViewer = (statuses, initialIndex) => setViewer({ statuses, initialIndex });
+  const closeViewer = () => setViewer(null);
+
   return (
     <div className="container mx-auto px-4 pt-20 pb-24 max-w-lg">
+      {viewer && (
+        <StatusViewer
+          statuses={viewer.statuses}
+          initialIndex={viewer.initialIndex}
+          onClose={closeViewer}
+        />
+      )}
       <h2 className="text-xl font-bold mb-3">Updates</h2>
 
       {/* Create status */}
@@ -75,8 +87,12 @@ const UpdatesPage = () => {
         <div className="mb-6">
           <div className="text-sm font-semibold text-base-content/70 mb-2">My Status</div>
           <div className="space-y-2">
-            {myStatuses.map((s) => (
-              <div key={s._id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-base-200/60">
+            {myStatuses.map((s, i) => (
+              <div
+                key={s._id}
+                className="flex items-center gap-3 p-2 rounded-lg hover:bg-base-200/60 cursor-pointer"
+                onClick={() => openViewer(myStatuses.map(st => ({ ...st, userId: { _id: authUser?._id, fullName: authUser?.fullName, profilePic: authUser?.profilePic } })), i)}
+              >
                 <div className="avatar">
                   <div className="w-12 rounded-full ring ring-secondary ring-offset-base-100 ring-offset-2 overflow-hidden">
                     {s.type === 'image' ? (
@@ -92,7 +108,10 @@ const UpdatesPage = () => {
                   <div className="text-sm font-medium truncate">{s.type === 'text' ? (s.text || 'Text status') : s.type}</div>
                   <div className="text-xs text-base-content/60">{timeAgo(s.createdAt)}</div>
                 </div>
-                <button className="btn btn-xs btn-outline" onClick={() => deleteStatus(s._id)}>
+                <button
+                  className="btn btn-xs btn-outline"
+                  onClick={e => { e.stopPropagation(); deleteStatus(s._id); }}
+                >
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
@@ -110,18 +129,27 @@ const UpdatesPage = () => {
         {!isLoading && feedStatuses?.length === 0 && (
           <div className="text-sm text-base-content/60">No updates</div>
         )}
-        {feedStatuses.map((item) => (
-          <div key={item._id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-base-200/60">
+        {feedStatuses.map((item, i) => (
+          <div
+            key={item._id}
+            className="flex items-center gap-3 p-2 rounded-lg hover:bg-base-200/60 cursor-pointer"
+            onClick={() => openViewer(feedStatuses, i)}
+          >
             <div className="avatar">
               <div className="w-12 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2 overflow-hidden">
-                <img src={item.userAvatar || '/avatar.png'} alt={item.userName} />
+                <img src={item.userId?.profilePic || item.userAvatar || '/avatar.png'} alt={item.userId?.fullName || item.userName} />
               </div>
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold truncate">{item.userName}</div>
+              <div className="text-sm font-semibold truncate">{item.userId?.fullName || item.userName}</div>
               <div className="text-xs text-base-content/60">{timeAgo(item.createdAt)}</div>
             </div>
-            <div className="text-xs text-base-content/70 capitalize">{item.type}</div>
+            <div className="flex items-center gap-2">
+              {item.likes?.length > 0 && (
+                <span className="text-xs text-base-content/60">{item.likes.length} ❤</span>
+              )}
+              <span className="text-xs text-base-content/70 capitalize">{item.type}</span>
+            </div>
           </div>
         ))}
       </div>

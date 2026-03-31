@@ -14,7 +14,7 @@ import ProfilePage from "./pages/ProfilePage";
 import SettingsPage from "./pages/SettingsPage";
 import EmailVerificationPage from "./pages/EmailVerificationPage";
 import PasswordResetPage from "./pages/PasswordResetPage";
-import {useThemeStore} from "./store/useThemeStore" ;
+import {useThemeStore}from "./store/useThemeStore" ;
 import {Toaster} from "react-hot-toast";
 import {useAuthStore} from "./store/useAuthStore" 
 import { useEffect, useState } from "react";

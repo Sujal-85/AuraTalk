@@ -1,11 +1,8 @@
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import User from "../models/user.model.js";
-import cloudinary from "./cloudinary.js";
+import { uploadToFirebase } from "./firebaseStorage.js";
 import axios from "axios";
-import dotenv from "dotenv";
-
-dotenv.config();
 
 // Initialize Google OAuth strategy only if credentials are available
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
@@ -14,7 +11,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
       {
         clientID: process.env.GOOGLE_CLIENT_ID,
         clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        callbackURL: process.env.GOOGLE_CALLBACK_URL || "/api/auth/google/callback",
+        callbackURL: "/api/auth/google/callback",
       },
       async (accessToken, refreshToken, profile, done) => {
         try {
@@ -51,15 +48,14 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             await user.save();
           }
 
-          // Best-effort: upload to Cloudinary after we've ensured login proceeds
+          // Best-effort: upload to Firebase Storage after we've ensured login proceeds
           // Do not block OAuth completion on image upload
           if (googlePhoto) {
             (async () => {
               try {
                 const response = await axios.get(googlePhoto, { responseType: 'arraybuffer', timeout: 4000 });
                 const base64Image = `data:image/jpeg;base64,${Buffer.from(response.data, 'binary').toString('base64')}`;
-                const uploadResult = await cloudinary.uploader.upload(base64Image);
-                uploadedProfilePic = uploadResult.secure_url;
+                const uploadedProfilePic = await uploadToFirebase(base64Image, "profiles");
                 if (uploadedProfilePic && user && user.profilePic !== uploadedProfilePic) {
                   user.profilePic = uploadedProfilePic;
                   await user.save();

@@ -19,16 +19,17 @@ function AudioUnlocker() {
     <div
       style={{
         position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
-        background: "rgba(0,0,0,0.7)", color: "#fff", zIndex: 9999,
-        display: "flex", alignItems: "center", justifyContent: "center"
+        background: "transparent", color: "#fff", zIndex: 9999,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      
       }}
       onClick={() => setUnlocked(true)}
     >
       <audio ref={audioRef} src="/ringtone.mp3" />
-      <div style={{ fontSize: 20, textAlign: "center" }}>
-        Tap anywhere to enable call sounds
+      <div style={{ fontSize: 20, textAlign: "center", opacity: 1 }}>
+
       </div>
     </div>
   );
 }
-export default AudioUnlocker; 
+export default AudioUnlocker;

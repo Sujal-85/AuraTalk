@@ -70,10 +70,30 @@ const messageSchema = new mongoose.Schema(
     replyTo: { type: String, default: null },
     replyToText: { type: String, default: null },
     replyToSenderName: { type: String, default: null },
+    statusReply: {
+      type: {
+        statusType: { type: String, enum: ['text', 'image', 'video'] },
+        text: { type: String },
+        mediaUrl: { type: String },
+        ownerName: { type: String },
+      },
+      default: null,
+    },
 },
-    {timestamps: true},
-
+    {timestamps: true}
 );
+
+// Performance Indexes
+// Index for direct messages between two users (common query)
+messageSchema.index({ senderId: 1, receiverId: 1, createdAt: -1 });
+messageSchema.index({ receiverId: 1, senderId: 1, createdAt: -1 });
+
+// Index for group messages
+messageSchema.index({ groupId: 1, createdAt: -1 });
+
+// Index for unread counts
+messageSchema.index({ receiverId: 1, seen: 1 });
+
 
 const Message = mongoose.model("Message", messageSchema);
 export default Message;

@@ -16,6 +16,16 @@ const userSchema = new mongoose.Schema(
             unique: true,
             sparse: true,
         },
+        clerkId: {
+            type: String,
+            unique: true,
+            sparse: true,
+        },
+        firebaseUid: {
+            type: String,
+            unique: true,
+            sparse: true,
+        },
         fullName: {
             type:String,
             required: true,
@@ -24,7 +34,7 @@ const userSchema = new mongoose.Schema(
         password: {
             type: String,
             minlength: 8,
-            required: function() { return !this.googleId; },
+            required: function() { return !this.googleId && !this.clerkId && !this.firebaseUid; },
         },
         profilePic:{
             type: String,
