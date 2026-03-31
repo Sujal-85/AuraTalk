@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import { Camera, Mail, User, Lock, Eye, EyeOff } from "lucide-react";
 import toast from "react-hot-toast";
-import { axiosInstance } from "../lib/axios";
 
 const ProfilePage = () => {
   const { authUser, isUpdatingProfile, updateProfile } = useAuthStore();
@@ -40,14 +39,16 @@ const ProfilePage = () => {
 
     try {
       setIsUpdatingPassword(true);
-      await axiosInstance.put("/auth/update-password", {
+      const response = await axiosInstance.put("/auth/update-password", {
         currentPassword: passwordForm.currentPassword,
-        newPassword: passwordForm.newPassword,
+        newPassword: passwordForm.newPassword
       });
+      const data = await response.data;
+      if (!response.ok) throw new Error(data.message || "Failed to update password");
       toast.success("Password updated successfully");
       setPasswordForm({ currentPassword: "", newPassword: "", confirmNewPassword: "" });
     } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Failed to update password");
+      toast.error(err.message || "Failed to update password");
     } finally {
       setIsUpdatingPassword(false);
     }

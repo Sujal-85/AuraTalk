@@ -1232,6 +1232,37 @@ export const ChatContainer = ({
                             You
                           </div>
                         )}
+                        {message.statusReply && (
+                          <div className="mb-1 flex items-center">
+                            <div className="h-full min-h-[40px] w-1 rounded-l bg-violet-500 mr-2 self-stretch" />
+                            <div className="flex-1 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-lg px-2 py-1 flex gap-2 items-center overflow-hidden">
+                              {message.statusReply.statusType === 'image' && message.statusReply.mediaUrl && (
+                                <img
+                                  src={message.statusReply.mediaUrl}
+                                  alt="status"
+                                  className="w-10 h-10 rounded object-cover shrink-0"
+                                />
+                              )}
+                              {message.statusReply.statusType === 'video' && (
+                                <div className="w-10 h-10 rounded bg-violet-200 dark:bg-violet-800 flex items-center justify-center shrink-0">
+                                  <span className="text-violet-700 dark:text-violet-200 text-xs font-bold">▶</span>
+                                </div>
+                              )}
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-xs font-bold text-violet-700 dark:text-violet-300 mb-0.5">
+                                  {message.statusReply.ownerName ? `${message.statusReply.ownerName}'s status` : 'Status'}
+                                </span>
+                                <span className="text-xs text-violet-900 dark:text-violet-100 truncate">
+                                  {message.statusReply.statusType === 'text'
+                                    ? (message.statusReply.text || 'Text status')
+                                    : message.statusReply.statusType === 'video'
+                                    ? '🎥 Video'
+                                    : '🖼 Photo'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         {message.replyTo && (
                           <div className="mb-1 flex items-center">
                             <div className="h-8 w-1 rounded-l bg-green-500 mr-2" />

@@ -223,7 +223,7 @@ const NoChatSelected = () => {
     if (mainTab === 'calls') {
       setIsCallHistoryLoading(true);
       axiosInstance.get('/calls')
-        .then(res => setCallHistory(res.data))
+        .then(res => setCallHistory(Array.isArray(res.data) ? res.data : []))
         .catch(() => setCallHistory([]))
         .finally(() => setIsCallHistoryLoading(false));
     }
@@ -734,7 +734,7 @@ const NoChatSelected = () => {
               </div>
             )}
             <ul className="flex-1 min-h-0 flex flex-col gap-1 overflow-y-auto px-2 pb-28 ">
-              {callHistory.map(call => {
+              {(Array.isArray(callHistory) ? callHistory : []).map(call => {
                 const user = call.receiver || call.caller || {};
                 const isMissed = call.status === "missed";
                 const isOutgoing = call.direction === "outgoing";

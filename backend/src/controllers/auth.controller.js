@@ -1,51 +1,44 @@
 import { generateToken } from "../lib/utils.js";
 import User from "../models/user.model.js";
 import bcrypt from "bcryptjs";
-import cloudinary from "../lib/cloudinary.js";
 import { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from "../lib/email.js";
 import { sendVerificationSMS } from "../lib/sms.js";
 import crypto from "crypto";
+import { auth as firebaseAuth } from "../lib/firebaseAdmin.js";
 
 export const signup = async (req, res) => {
-  const { fullName, email, password, publicKey, mobileNumber } = req.body;
+  const { fullName, email, password, publicKey, mobileNumber, firebaseToken } = req.body;
   try {
-    if (!fullName || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" });
+    let firebaseUid = null;
+    if (firebaseToken) {
+      const decodedToken = await firebaseAuth.verifyIdToken(firebaseToken);
+      firebaseUid = decodedToken.uid;
     }
 
-    if (password.length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    if (!fullName || !email) {
+      return res.status(400).json({ message: "Full name and email are required" });
+    }
+
+    let user = await User.findOne({ email });
+    if (user) {
+      return res.status(400).json({ message: "Email already exists" });
     }
 
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // Generate email verification token
-    const emailVerificationToken = crypto.randomBytes(32).toString('hex');
-    const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const hashedPassword = password ? await bcrypt.hash(password, salt) : undefined;
 
     const newUser = new User({
       fullName,
       email,
       password: hashedPassword,
+      firebaseUid,
       publicKey: publicKey || null,
       mobileNumber: mobileNumber || null,
-      emailVerificationToken,
-      emailVerificationExpires,
+      isEmailVerified: !!firebaseToken, // If coming from firebase, consider verified or handle separately
     });
 
     await newUser.save();
-
-    // Send verification email (optional - won't break if email not configured)
-    let emailSent = false;
-    try {
-      emailSent = await sendVerificationEmail(email, emailVerificationToken, fullName);
-    } catch (error) {
-      console.log("Email service not configured or failed:", error.message);
-      emailSent = false;
-    }
     
-    // generate jwt token here
     generateToken(newUser._id, res);
 
     res.status(201).json({
@@ -54,20 +47,17 @@ export const signup = async (req, res) => {
       email: newUser.email,
       profilePic: newUser.profilePic,
       isEmailVerified: newUser.isEmailVerified,
-      googleId: newUser.googleId, // Include googleId to identify Google users
       mobileNumber: newUser.mobileNumber,
       isMobileVerified: newUser.isMobileVerified,
-      message: emailSent ? "Account created successfully! Please check your email to verify your account." : "Account created successfully! Please verify your email later."
     });
 
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ message: "Email already exists" });
-    }
     console.log("Error in signup controller", error.message);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
+
+
 
 export const updatePassword = async (req, res) => {
   try {
@@ -111,24 +101,50 @@ export const updatePassword = async (req, res) => {
 };
 
 export const login = async (req, res) => {
-  const { email, password, publicKey } = req.body;
+  const { email, password, publicKey, firebaseToken } = req.body;
   try {
-    const user = await User.findOne({ email });
+    let user;
+    
+    if (firebaseToken) {
+      console.log("Verifying Firebase token in login controller...");
+      const decodedToken = await firebaseAuth.verifyIdToken(firebaseToken);
+      const firebaseEmail = decodedToken.email;
+      console.log("Firebase token verified for email:", firebaseEmail);
 
-    if (!user) {
-      return res.status(400).json({ message: "Invalid credentials" });
+      user = await User.findOne({ email: firebaseEmail });
+      
+      if (!user) {
+        console.log("User not found in DB, creating new user from Firebase data...");
+        // Auto-signup for Firebase users (Google etc)
+        user = new User({
+          fullName: decodedToken.name || firebaseEmail.split('@')[0],
+          email: firebaseEmail,
+          firebaseUid: decodedToken.uid,
+          isEmailVerified: decodedToken.email_verified || true,
+          profilePic: decodedToken.picture || ""
+        });
+        await user.save();
+        console.log("New user created from Firebase:", user.email);
+      } else {
+        console.log("User found in DB:", user.email);
+        if (!user.firebaseUid) {
+          console.log("Updating existing user with firebaseUid...");
+          user.firebaseUid = decodedToken.uid;
+          await user.save();
+        }
+      }
+    } else {
+      console.log("Standard email/password login attempt for:", email);
+      user = await User.findOne({ email });
+      if (!user || !(await bcrypt.compare(password, user.password))) {
+        console.log("Invalid credentials for:", email);
+        return res.status(400).json({ message: "Invalid credentials" });
+      }
     }
 
-    const isPasswordCorrect = await bcrypt.compare(password, user.password);
-    if (!isPasswordCorrect) {
-      return res.status(400).json({ message: "Invalid credentials" });
-    }
-
-    // Do not block login based on email verification anymore
-
+    console.log("Generating local JWT for user:", user.email);
     generateToken(user._id, res);
 
-    // If publicKey is provided and not already set, update it
     if (publicKey && !user.publicKey) {
       user.publicKey = publicKey;
       await user.save();
@@ -140,30 +156,26 @@ export const login = async (req, res) => {
       email: user.email,
       profilePic: user.profilePic,
       isEmailVerified: user.isEmailVerified,
-      googleId: user.googleId, // Include googleId to identify Google users
       mobileNumber: user.mobileNumber,
       isMobileVerified: user.isMobileVerified,
     });
   } catch (error) {
-    console.log("Error in login controller", error.message);
+    console.error("Error in login controller:", error.message);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
 export const logout = (req, res) => {
   try {
-    res.cookie("jwt", "", {
-      maxAge: 0,
-      httpOnly: true,
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      secure: process.env.NODE_ENV === "production",
-    });
+    res.cookie("jwt", "", { maxAge: 0 });
     res.status(200).json({ message: "Logged out successfully" });
   } catch (error) {
     console.log("Error in logout controller", error.message);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
+
+import { uploadToFirebase } from "../lib/firebaseStorage.js";
 
 export const updateProfile = async (req, res) => {
   try {
@@ -174,10 +186,10 @@ export const updateProfile = async (req, res) => {
       return res.status(400).json({ message: "Profile pic is required" });
     }
 
-    const uploadResponse = await cloudinary.uploader.upload(profilePic);
+    const publicUrl = await uploadToFirebase(profilePic, "profiles");
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      { profilePic: uploadResponse.secure_url },
+      { profilePic: publicUrl },
       { new: true }
     );
 
@@ -188,8 +200,21 @@ export const updateProfile = async (req, res) => {
   }
 };
 
-export const checkAuth = (req, res) => {
+export const checkAuth = async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const idToken = authHeader.split('Bearer ')[1];
+      const decodedToken = await firebaseAuth.verifyIdToken(idToken);
+      const user = await User.findOne({ email: decodedToken.email });
+      if (user) {
+        return res.status(200).json(user);
+      }
+    }
+
+    if (!req.user) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
     res.status(200).json(req.user);
   } catch (error) {
     console.log("Error in checkAuth controller", error.message);
