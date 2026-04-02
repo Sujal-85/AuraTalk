@@ -5,10 +5,30 @@ import express from "express";
 const app = express();
 const server = http.createServer(app);
 
+// Build allowed origins from environment variable + fallback to localhost
+const allowedOrigins = process.env.CLIENT_ORIGIN
+  ? process.env.CLIENT_ORIGIN.split(",").map((o) => o.trim())
+  : ["http://localhost:5173", "http://localhost:5174"];
+
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173"],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, Postman)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        console.warn(`Socket.IO: Blocked origin: ${origin}`);
+        callback(new Error(`Origin ${origin} not allowed by Socket.IO CORS`));
+      }
+    },
+    credentials: true,
   },
+  // Allow both polling and websocket transports
+  transports: ["polling", "websocket"],
+  // Ping settings to detect dead connections faster
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 export function getReceiverSocketId(userId) {
@@ -77,36 +97,47 @@ io.on("connection", (socket) => {
   socket.on("call:offer", ({ to, ...data }) => {
     const receiverSocketIds = userSocketMap[to];
     if (receiverSocketIds && receiverSocketIds.length > 0) {
-      io.to(receiverSocketIds[0]).emit("call:offer", { ...data });
-    } else {
+      receiverSocketIds.forEach(id => {
+        io.to(id).emit("call:offer", { ...data });
+      });
+      console.log(`Call offer broadcast to ${receiverSocketIds.length} sockets for user ${to}`);
     }
   });
 
   socket.on("call:answer", ({ to, ...data }) => {
     const receiverSocketIds = userSocketMap[to];
     if (receiverSocketIds && receiverSocketIds.length > 0) {
-      io.to(receiverSocketIds[0]).emit("call:answer", { ...data });
+      receiverSocketIds.forEach(id => {
+        io.to(id).emit("call:answer", { ...data });
+      });
+      console.log(`Call answer broadcast to ${receiverSocketIds.length} sockets for user ${to}`);
     }
   });
 
   socket.on("call:ice-candidate", ({ to, ...data }) => {
     const receiverSocketIds = userSocketMap[to];
     if (receiverSocketIds && receiverSocketIds.length > 0) {
-      io.to(receiverSocketIds[0]).emit("call:ice-candidate", { ...data });
+      receiverSocketIds.forEach(id => {
+        io.to(id).emit("call:ice-candidate", { ...data });
+      });
     }
   });
 
   socket.on("call:decline", ({ to }) => {
     const receiverSocketIds = userSocketMap[to];
     if (receiverSocketIds && receiverSocketIds.length > 0) {
-      io.to(receiverSocketIds[0]).emit("call:decline");
+      receiverSocketIds.forEach(id => {
+        io.to(id).emit("call:decline");
+      });
     }
   });
 
   socket.on("call:end", ({ to }) => {
     const receiverSocketIds = userSocketMap[to];
     if (receiverSocketIds && receiverSocketIds.length > 0) {
-      io.to(receiverSocketIds[0]).emit("call:end");
+      receiverSocketIds.forEach(id => {
+        io.to(id).emit("call:end");
+      });
     }
   });
 });

@@ -325,15 +325,26 @@ export const useAuthStore = create((set,get) => ({
         const {authUser} = get();
         if (!authUser || !authUser._id || get().socket?.connected) return;
         
-        const socket = io(Base_url,{
-            query:{
+        const socket = io(Base_url, {
+            query: {
                 userId: authUser._id,
-            }
+            },
+            // Explicitly allow both transports so it works behind proxies/CDNs
+            transports: ["polling", "websocket"],
+            // Reconnect automatically if dropped
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000,
         });
-        
+
+        // ✅ Register ALL listeners BEFORE connect() to avoid race conditions
+        socket.on("getOnlineUsers", (userIds) => {
+            set({ onlineUsers: userIds });
+        });
+
         socket.on("connect", () => {
-            console.log("Socket connected successfully");
-            set({socket: socket});
+            console.log("Socket connected successfully:", socket.id);
+            set({ socket });
             // Initialize invitation socket listeners after connection
             try {
                 useChatStore.getState().initializeInvitationSocket();
@@ -341,20 +352,19 @@ export const useAuthStore = create((set,get) => ({
                 console.error("Failed to initialize invitation socket:", e);
             }
         });
-        
+
         socket.on("connect_error", (error) => {
-            console.error("Socket connection error:", error);
+            console.error("Socket connection error:", error.message);
         });
-        
+
         socket.on("disconnect", (reason) => {
             console.log("Socket disconnected:", reason);
+            // On transport close, socket.io handles reconnect automatically
         });
-        
+
+        // Store socket ref immediately (before connect) so disconnect can be called
+        set({ socket });
         socket.connect();
-        
-        socket.on("getOnlineUsers", (userIds) => {
-            set({onlineUsers: userIds});
-        });
     },
     disconnectSocket: () => {
         if(get().socket?.connected) get().socket?.disconnect();

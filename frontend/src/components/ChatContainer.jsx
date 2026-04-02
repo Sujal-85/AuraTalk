@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useLayoutEffect } from "react";
+import React, { useEffect, useRef, useState, useMemo, useLayoutEffect, useCallback } from "react";
 import WhatsAppAudioPreview from "./WhatsAppAudioPreview";
 import { useChatStore } from "../store/useChatStore";
 import MessageInput from "./MessageInput";
@@ -30,15 +30,7 @@ import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import MessageInfoModal from "./MessageInfoModal";
 import Picker from '@emoji-mart/react';
-import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import {
-  fetchUserPublicKey,
-  importPublicKey,
-  deriveSharedSecret,
-  decryptMessage,
-  getPrivateKey
-} from "../store/useChatStore";
 
 // Utility: check if string is only 1-3 emojis (no other text)
 function isBigEmoji(text) {
@@ -210,33 +202,35 @@ export const ChatContainer = ({
       try {
         const res = await axiosInstance.get(`/messages/${selectedUser._id}`, { params: { limit: 30 } });
         let incoming = res.data.messages || [];
-        const myPrivateKey = await getPrivateKey(authUser._id);
-        const publicKeyCache = new Map();
+        
         const decryptPromises = incoming.map(async (msg) => {
-          if (msg.senderId !== 'ai-bot' && msg.text && typeof msg.text === 'string' && msg.text.includes(':')) {
+          let updatedMsg = { ...msg };
+          // Decrypt text
+          if (updatedMsg.senderId !== 'ai-bot' && updatedMsg.text && typeof updatedMsg.text === 'string' && updatedMsg.text.includes(':')) {
             try {
-              let otherUserId = msg.senderId === authUser._id ? msg.receiverId : msg.senderId;
-              let otherPublicKey = publicKeyCache.has(otherUserId)
-                ? publicKeyCache.get(otherUserId)
-                : await fetchUserPublicKey(otherUserId);
-              publicKeyCache.set(otherUserId, otherPublicKey);
-              const otherPublicKeyImported = await importPublicKey(
-                typeof otherPublicKey === 'string' ? JSON.parse(otherPublicKey) : otherPublicKey
-              );
-              const sharedSecret = await deriveSharedSecret(myPrivateKey, otherPublicKeyImported);
-              msg.text = await decryptMessage(msg.text, sharedSecret);
-              if (
-                msg.replyToText &&
-                typeof msg.replyToText === 'string' &&
-                /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(msg.replyToText)
-              ) {
-                try { msg.replyToText = await decryptMessage(msg.replyToText, sharedSecret); } catch {}
-              }
+              updatedMsg.text = await useChatStore.getState().smartDecrypt(updatedMsg, updatedMsg.senderId === authUser._id ? updatedMsg.receiverId : updatedMsg.senderId);
             } catch (e) {
-              msg.text = '[Unable to decrypt]';
+              console.warn("[E2EE] Failed to decrypt text for message:", updatedMsg._id, e.message);
+              // keep as is or set to placeholder
             }
           }
-          return msg;
+          // Decrypt media fields
+          for (const field of ['image', 'audio', 'video', 'document']) {
+            if (isProbablyEncrypted(updatedMsg[field])) {
+              try {
+                const otherId = updatedMsg.senderId === authUser._id ? updatedMsg.receiverId : updatedMsg.senderId;
+                updatedMsg[field] = await useChatStore.getState().smartDecrypt({ text: updatedMsg[field] }, otherId);
+              } catch (e) {
+                updatedMsg[field] = '[Unable to decrypt]';
+              }
+            }
+          }
+          if (updatedMsg.replyToText && typeof updatedMsg.replyToText === 'string' && updatedMsg.replyToText.includes(':')) {
+            try {
+              updatedMsg.replyToText = await useChatStore.getState().smartDecrypt({ text: updatedMsg.replyToText }, updatedMsg.senderId === authUser._id ? updatedMsg.receiverId : updatedMsg.senderId);
+            } catch {}
+          }
+          return updatedMsg;
         });
         incoming = await Promise.all(decryptPromises);
     
@@ -247,7 +241,7 @@ export const ChatContainer = ({
         const incomingIdSet = new Set(incoming.map(m => String(m._id)));
         const oldestIncomingTime = incoming.length ? Math.min(...incoming.map(m => new Date(m.createdAt || 0).getTime())) : 0;
 
-        incoming.forEach(inc => {
+        for (const inc of incoming) {
           const id = String(inc._id);
           const idx = updatedMessages.findIndex(m => String(m._id) === id);
           if (idx >= 0) {
@@ -273,7 +267,7 @@ export const ChatContainer = ({
             hasChanges = true;
             updatedMessages.push(inc);
           }
-        });
+        }
 
         // Remove recently deleted messages (that the API filtered out for me)
         if (incoming.length) {
@@ -289,14 +283,16 @@ export const ChatContainer = ({
         }
 
         if (hasChanges) {
-          updatedMessages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+          updatedMessages.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
           useChatStore.setState({ messages: updatedMessages });
           localStorage.setItem(`chat-messages-${selectedUser._id}`, JSON.stringify(updatedMessages));
         }
         try {
           await axiosInstance.post(`/messages/read/${selectedUser._id}`);
         } catch {}
-      } catch {}
+      } catch (err) {
+        console.error("[ChatContainer] Poll error:", err);
+      }
     }
     intervalId = setInterval(poll, 250);
     poll();
@@ -922,33 +918,8 @@ export const ChatContainer = ({
     setShowScrollDown(e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight > 100);
   };
 
-  useEffect(() => {
-    async function decryptMediaMessages() {
-      if (!authUser || !selectedUser || !messages.length) return;
-      let otherUserId = selectedUser._id;
-      if (otherUserId === 'ai-bot') return;
-      const myPrivateKey = await getPrivateKey(authUser._id);
-      const otherPublicKeyRaw = await fetchUserPublicKey(otherUserId);
-      const otherPublicKey = typeof otherPublicKeyRaw === 'string' ? JSON.parse(otherPublicKeyRaw) : otherPublicKeyRaw;
-      const otherPublicKeyImported = await importPublicKey(otherPublicKey);
-      const sharedSecret = await deriveSharedSecret(myPrivateKey, otherPublicKeyImported);
-      const decrypted = await Promise.all(messages.map(async (msg) => {
-        const newMsg = { ...msg };
-        for (const field of ['image', 'audio', 'video', 'document']) {
-          if (isProbablyEncrypted(newMsg[field])) {
-            try {
-              newMsg[field] = await decryptMessage(newMsg[field], sharedSecret);
-            } catch {
-              newMsg[field] = '[Unable to decrypt]';
-            }
-          }
-        }
-        return newMsg;
-      }));
-      setMessages(decrypted);
-    }
-    decryptMediaMessages();
-  }, [messages, authUser, selectedUser, setMessages]);
+  // Media decryption is now handled in the main message polling/fetching logic
+  // to avoid redundant state updates and infinite loops.
 
   useEffect(() => {
     const root = chatListRef.current;

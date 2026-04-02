@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
@@ -10,62 +10,6 @@ import UserSelectModal from "./UserSelectModal";
 import AIChatModal from "./AIChatModal";
 import DOMPurify from 'dompurify';
 
-// E2EE helpers (copy from useChatStore.js)
-async function fetchUserPublicKey(userId) {
-  const res = await axiosInstance.get(`/auth/public-key/${userId}`);
-  return res.data.publicKey;
-}
-async function importPublicKey(jwk) {
-  return await window.crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    []
-  );
-}
-async function importPrivateKey(jwk) {
-  return await window.crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveKey", "deriveBits"]
-  );
-}
-async function deriveSharedSecret(privateKey, publicKey) {
-  return await window.crypto.subtle.deriveKey(
-    {
-      name: "ECDH",
-      public: publicKey,
-    },
-    privateKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
-}
-async function decryptMessage(ciphertext, sharedSecret) {
-  try {
-    const [ivB64, ctB64] = ciphertext.split(":");
-    const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
-    const ct = Uint8Array.from(atob(ctB64), c => c.charCodeAt(0));
-    const dec = new TextDecoder();
-    const plain = await window.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
-      sharedSecret,
-      ct
-    );
-    return dec.decode(plain);
-  } catch (e) {
-    return '[Unable to decrypt]';
-  }
-}
-async function getPrivateKey(userId) {
-  const keypair = JSON.parse(localStorage.getItem(`ecc-keypair-${userId}`));
-  if (!keypair || !keypair.privateKey) return null;
-  return await importPrivateKey(keypair.privateKey);
-}
 
 function formatLastMessageDate(dateString) {
   if (!dateString) return "";
@@ -110,6 +54,9 @@ const NoChatSelected = () => {
     invitations,
     acceptedPeers,
     loadAcceptedPeers,
+    getCallHistory,
+    callLogs,
+    isCallHistoryLoading
   } = useChatStore();
   const { onlineUsers, authUser } = useAuthStore();
   const { theme } = useThemeStore();
@@ -132,15 +79,12 @@ const NoChatSelected = () => {
   const [showAIChatModal, setShowAIChatModal] = useState(false);
   const [activeTab, setActiveTab] = useState("all");
   const [mainTab, setMainTab] = useState("chats"); // 'chats' | 'updates' | 'calls'
+  const [callFilter, setCallFilter] = useState("all");
   const location = useLocation();
-  const [callHistory, setCallHistory] = useState([]);
-  const [isCallHistoryLoading, setIsCallHistoryLoading] = useState(false);
   const contextMenuRef = useRef(null);
   const [selectedUsers, setSelectedUsers] = useState([]);
   const longPressTimeout = useRef(null);
-  const { authUser: storeAuthUser } = useAuthStore();
   const [decryptedLastMessages, setDecryptedLastMessages] = useState({});
-  const { selectedUser: storeSelectedUser } = useChatStore();
 
   // Check if user is new and has no invitations
   useEffect(() => { try { loadAcceptedPeers(); } catch {} }, [loadAcceptedPeers]);
@@ -221,13 +165,9 @@ const NoChatSelected = () => {
 
   useEffect(() => {
     if (mainTab === 'calls') {
-      setIsCallHistoryLoading(true);
-      axiosInstance.get('/calls')
-        .then(res => setCallHistory(Array.isArray(res.data) ? res.data : []))
-        .catch(() => setCallHistory([]))
-        .finally(() => setIsCallHistoryLoading(false));
+      getCallHistory();
     }
-  }, [mainTab]);
+  }, [mainTab, getCallHistory]);
 
   useEffect(() => {
     if (contextMenu.visible && contextMenuRef.current) {
@@ -265,45 +205,18 @@ const NoChatSelected = () => {
     async function decryptAllLastMessages() {
       if (!authUser) return;
       const newDecrypted = {};
+      const { smartDecrypt } = useChatStore.getState();
+      
       for (const user of users) {
         const lastMsg = user.lastMessage;
-        // For all types, try to decrypt if content is a string and looks encrypted
         const msgText = lastMsg?.text ?? lastMsg?.content;
-        if (
-          lastMsg &&
-          typeof msgText === 'string' &&
-          msgText.includes(':') &&
-          ['text', 'image', 'video', 'audio', 'document'].includes(lastMsg.type)
-        ) {
+        
+        if (lastMsg && typeof msgText === 'string') {
           try {
-            // Skip AI bot and system users
-            if (user._id === 'ai-bot' || lastMsg.senderId === 'ai-bot') {
-              newDecrypted[user._id] = msgText;
-              continue;
-            }
-            let otherUserId;
-            if (lastMsg.senderId && lastMsg.senderId === authUser._id) {
-              otherUserId = user._id;
-            } else if (lastMsg.senderId) {
-              otherUserId = lastMsg.senderId;
-            } else {
-              otherUserId = user._id;
-            }
-            if (!otherUserId || otherUserId === 'undefined') {
-              newDecrypted[user._id] = '[Unable to decrypt]';
-              continue;
-            }
-            const myPrivateKey = await getPrivateKey(authUser._id);
-            const otherPublicKeyRaw = await fetchUserPublicKey(otherUserId);
-            const otherPublicKey = typeof otherPublicKeyRaw === 'string' ? JSON.parse(otherPublicKeyRaw) : otherPublicKeyRaw;
-            const otherPublicKeyImported = await importPublicKey(otherPublicKey);
-            const sharedSecret = await deriveSharedSecret(myPrivateKey, otherPublicKeyImported);
-            newDecrypted[user._id] = await decryptMessage(msgText, sharedSecret);
+            newDecrypted[user._id] = await smartDecrypt(msgText, user._id);
           } catch (e) {
-            newDecrypted[user._id] = /^[\x20-\x7E]+$/.test(msgText) ? msgText : '[Unable to decrypt]';
+            newDecrypted[user._id] = msgText;
           }
-        } else if (lastMsg && typeof msgText === 'string') {
-          newDecrypted[user._id] = msgText;
         }
       }
       setDecryptedLastMessages(newDecrypted);
@@ -312,19 +225,6 @@ const NoChatSelected = () => {
     // eslint-disable-next-line
   }, [users, authUser]);
 
-  // Helper to get the last message for the selected user from the messages array
-  function getLastMessageForSelectedUser() {
-    if (!selectedUser) return null;
-    const relevantMessages = messages.filter(
-      m => (m.senderId === selectedUser._id || m.recipientId === selectedUser._id)
-    );
-    if (relevantMessages.length === 0) return null;
-    // Sort by createdAt descending
-    const sorted = [...relevantMessages].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    return sorted[0];
-  }
-
-  if (isUsersLoading) return <div className="flex justify-center items-center h-full">Loading...</div>;
 
   // Filter and sort users for mobile
   const baseUsers = isNewUserWithNoInvitations ? [] : users;
@@ -346,12 +246,41 @@ const NoChatSelected = () => {
     visibleUsers = visibleUsers.filter(user => favorites.includes(user._id));
   }
 
-  const sortedUsers = [...visibleUsers].sort((a, b) => {
-    const aOnline = onlineUsers.includes(a._id);
-    const bOnline = onlineUsers.includes(b._id);
-    if (aOnline === bOnline) return 0;
-    return aOnline ? -1 : 1;
-  });
+  const sortedUsers = useMemo(() => {
+    const seen = new Set();
+    return [...visibleUsers]
+      .filter(u => {
+        if (!u._id || seen.has(u._id)) return false;
+        seen.add(u._id);
+        return true;
+      })
+      .sort((a, b) => {
+        const aOnline = onlineUsers.includes(a._id);
+        const bOnline = onlineUsers.includes(b._id);
+        if (aOnline === bOnline) return 0;
+        return aOnline ? -1 : 1;
+      });
+  }, [visibleUsers, onlineUsers]);
+
+  const deduplicatedCallLogs = useMemo(() => {
+    const seen = new Set();
+    return (Array.isArray(callLogs) ? callLogs : []).filter(call => {
+      if (!call._id || seen.has(call._id)) return false;
+      seen.add(call._id);
+      return true;
+    });
+  }, [callLogs]);
+
+  const displayCalls = useMemo(() => {
+    if (callFilter === 'all') return deduplicatedCallLogs;
+    return deduplicatedCallLogs.filter(call => {
+      const isMissed = call.status === 'missed' || call.status === 'rejected';
+      return callFilter === 'missed' ? isMissed : !isMissed;
+    });
+  }, [deduplicatedCallLogs, callFilter]);
+
+  if (isUsersLoading) return <div className="flex justify-center items-center h-full">Loading...</div>;
+
 
   const handleClearMessages = async (userId) => {
     if (window.confirm("Are you sure you want to clear all messages with this user? This cannot be undone.")) {
@@ -402,7 +331,6 @@ const NoChatSelected = () => {
       toast.success('User deleted!', { id: 'user-deleted' });
       return updated;
     });
-    // Optionally, close chat if open (not needed in NoChatSelected)
   };
 
   const archivedUnreadCount = archivedUsers ? archivedUsers.filter(u => u.unreadCount > 0).length : 0;
@@ -423,17 +351,14 @@ const NoChatSelected = () => {
     return user.lastMessage || null;
   };
 
-  // Editing bar actions (example: delete, archive, pin)
+  // Editing bar actions
   const handleDeleteSelected = () => {
-    // Implement delete logic for selectedUsers
     setSelectedUsers([]);
   };
   const handleArchiveSelected = () => {
-    // Implement archive logic for selectedUsers
     setSelectedUsers([]);
   };
   const handlePinSelected = () => {
-    // Implement pin logic for selectedUsers
     setSelectedUsers([]);
   };
 
@@ -499,12 +424,6 @@ const NoChatSelected = () => {
                 >
                   Favourites
                 </button>
-                {/* <button
-                  className={`px-4 py-1 rounded-full border border-gray-800  transition font-medium ${activeTab === "archive" ? "bg-green-300 text-green-800 " : " text-gray-700"}`}
-                  onClick={() => { setActiveTab("archive"); setContextMenu((m) => ({ ...m, visible: false })); }}
-                >
-                  Archive
-                </button> */}
               </div>
             )}
             {/* Archive Bar (now below search bar) */}
@@ -533,7 +452,14 @@ const NoChatSelected = () => {
                   <div className="text-center text-zinc-400">No archived chats</div>
                 ) : (
                   <ul className="divide-y divide-zinc-200 dark:divide-zinc-700">
-                    {archivedUsers.map(user => (
+                    {(() => {
+                      const seen = new Set();
+                      return archivedUsers.filter(u => {
+                        if (!u._id || seen.has(u._id)) return false;
+                        seen.add(u._id);
+                        return true;
+                      });
+                    })().map(user => (
                       <li
                         key={user._id}
                         className="flex items-center gap-3 py-3 cursor-pointer hover:bg-base-200 rounded-lg transition relative"
@@ -734,8 +660,8 @@ const NoChatSelected = () => {
               </div>
             )}
             <ul className="flex-1 min-h-0 flex flex-col gap-1 overflow-y-auto px-2 pb-28 ">
-              {(Array.isArray(callHistory) ? callHistory : []).map(call => {
-                const user = call.receiver || call.caller || {};
+              {Array.from(new Map(displayCalls.map(c => [c.callId || c._id, c])).values()).map(call => {
+                const user = (call.caller && call.caller._id === authUser?._id) ? call.receiver : (call.caller || {});
                 const isMissed = call.status === "missed";
                 const isOutgoing = call.direction === "outgoing";
                 const callType = call.type === "video" ? "video" : "voice";
@@ -762,9 +688,9 @@ const NoChatSelected = () => {
                     title="Voice Call"
                     onClick={e => {
                       e.stopPropagation();
-                      setSelectedUser(user);
-                      setTimeout(() => handleCall(false), 0);
+                      handleCall(false, user);
                     }}
+
                   >
                     <svg className="w-6 h-6 text-base-content/70 group-hover:text-green-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M22 16.92V19a2 2 0 0 1-2.18 2A19.72 19.72 0 0 1 3 5.18 2 2 0 0 1 5 3h2.09a2 2 0 0 1 2 1.72c.13 1.05.37 2.07.72 3.06a2 2 0 0 1-.45 2.11l-.27.27a16 16 0 0 0 6.29 6.29l.27-.27a2 2 0 0 1 2.11-.45c.99.35 2.01.59 3.06.72A2 2 0 0 1 22 16.92z" /></svg>
                   </button>
@@ -775,9 +701,9 @@ const NoChatSelected = () => {
                     title="Video Call"
                     onClick={e => {
                       e.stopPropagation();
-                      setSelectedUser(user);
-                      setTimeout(() => handleCall(true), 0);
+                      handleCall(true, user);
                     }}
+
                   >
                     <svg className="w-6 h-6 text-base-content/70 group-hover:text-blue-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="2" y="7" width="15" height="10" rx="2" /><path d="M17 9l4 2v2l-4 2V9z" /></svg>
                   </button>
@@ -803,6 +729,9 @@ const NoChatSelected = () => {
                             ? sel.filter(id => id !== user._id)
                             : [...sel, user._id]
                         );
+                      } else {
+                        setSelectedUser(user);
+                        setMainTab('chats'); // Switch back to chats tab to show the chat
                       }
                     }}
                   >
