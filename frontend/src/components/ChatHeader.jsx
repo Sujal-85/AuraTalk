@@ -105,7 +105,8 @@ const ChatHeader = ({
             <button
               className="p-2 hover:bg-base-200 rounded-full"
               title="Video Call"
-              onClick={() => handleCall(true)}
+              onClick={() => handleCall(true, selectedUser)}
+
             >
               <Video className="w-6 h-6" />
             </button>
@@ -113,7 +114,8 @@ const ChatHeader = ({
             <button
               className="p-2 hover:bg-base-200 rounded-full"
               title="Call"
-              onClick={() => handleCall(false)}
+              onClick={() => handleCall(false, selectedUser)}
+
             >
               <Phone className="w-6 h-6" />
             </button>

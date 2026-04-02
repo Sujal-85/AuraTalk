@@ -87,7 +87,12 @@ async function encryptMessage(plainText, sharedSecret) {
     sharedSecret,
     enc.encode(plainText)
   );
-  const result = `${btoa(String.fromCharCode(...iv))}:${btoa(String.fromCharCode(...new Uint8Array(ciphertext)))}`;
+  
+  // Robust Base64 conversion
+  const ivB64 = btoa(String.fromCharCode.apply(null, iv));
+  const ctB64 = btoa(String.fromCharCode.apply(null, new Uint8Array(ciphertext)));
+  
+  const result = `${ivB64}:${ctB64}`;
   console.log('[E2EE] Encrypted text:', result);
   return result;
 }
@@ -95,8 +100,11 @@ async function encryptMessage(plainText, sharedSecret) {
 async function decryptMessage(ciphertext, sharedSecret) {
   try {
     const [ivB64, ctB64] = ciphertext.split(":");
+    if (!ivB64 || !ctB64) throw new Error("Invalid ciphertext format");
+
     const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
     const ct = Uint8Array.from(atob(ctB64), c => c.charCodeAt(0));
+    
     const dec = new TextDecoder();
     const plain = await window.crypto.subtle.decrypt(
       { name: "AES-GCM", iv },
@@ -137,6 +145,8 @@ export const useChatStore = create(
       acceptedPeers: [], // userIds with accepted invitations
       invitations: [], // pending invitations for auth user
       outgoingInvites: {}, // { userId: invitation }
+      sharedSecrets: {}, // { userId: CryptoKey } - IN-MEMORY ONLY
+      inFlightSecrets: {}, // Internal: { userId: Promise<CryptoKey> }
       archivedUsers: [],
       favorites: [],
        // Chat wallpaper settings (persisted)
@@ -241,23 +251,60 @@ export const useChatStore = create(
       iceServers: {
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
-          {
-            urls: "turn:your-turn-server.com",
-            username: "user",
-            credential: "password",
-          },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+          { urls: "stun:stun3.l.google.com:19302" },
+          { urls: "stun:stun4.l.google.com:19302" },
+          // Note: Add valid TURN servers here for production
         ],
       },
 
       // --- Call Log Management ---
+      getCallHistory: async (page = 1) => {
+        set({ isCallHistoryLoading: true });
+        try {
+          const res = await axiosInstance.get(`/calls/history?page=${page}`);
+          const { calls: newCalls, hasMore } = res.data;
+          set(state => {
+            const combined = page === 1 ? newCalls : [...state.callLogs, ...newCalls];
+            // Deduplicate call logs by callId (preferring newest) or _id
+            const seenIds = new Set();
+            const seenCallIds = new Set();
+            const uniqueCalls = combined.filter(call => {
+              if (call.callId) {
+                if (seenCallIds.has(call.callId)) return false;
+                seenCallIds.add(call.callId);
+              }
+              if (call._id) {
+                if (seenIds.has(call._id)) return false;
+                seenIds.add(call._id);
+              }
+              return true;
+            });
+            return {
+              callLogs: uniqueCalls.slice(0, 100),
+              hasMoreCalls: hasMore,
+              isCallHistoryLoading: false
+            };
+          });
+        } catch (error) {
+          console.error("Error fetching call history:", error);
+          set({ isCallHistoryLoading: false });
+          toast.error("Failed to load call history");
+        }
+      },
+
       addCallLogToBackend: async (callData) => {
         try {
           console.log("Sending call log to backend:", callData);
           const res = await axiosInstance.post("/calls", callData);
           console.log("Call log response:", res.data);
-          set(state => ({
-            callLogs: [res.data, ...state.callLogs.filter(log => log.callId !== callData.callId)].slice(0, 100),
-          }));
+          set(state => {
+            const filtered = state.callLogs.filter(log => log.callId !== callData.callId && log._id !== res.data._id);
+            return {
+              callLogs: [res.data, ...filtered].slice(0, 100),
+            };
+          });
           return res.data;
         } catch (error) {
           console.error("Failed to add call log:", error.response?.data || error.message);
@@ -267,9 +314,12 @@ export const useChatStore = create(
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
-          set(state => ({
-            callLogs: [tempLog, ...state.callLogs.filter(log => log.callId !== callData.callId)].slice(0, 100),
-          }));
+          set(state => {
+            const filtered = state.callLogs.filter(log => log.callId !== callData.callId);
+            return {
+              callLogs: [tempLog, ...filtered].slice(0, 100),
+            };
+          });
           return tempLog;
         }
       },
@@ -323,6 +373,34 @@ export const useChatStore = create(
 
       isUserPinned: (userId) => get().pinnedUsers.includes(userId),
 
+      pinUser: (userId) => set((state) => {
+        if (state.pinnedUsers.includes(userId)) return state;
+        const newPinned = [...state.pinnedUsers, userId];
+        localStorage.setItem("pinned-users", JSON.stringify(newPinned));
+        return { pinnedUsers: newPinned };
+      }),
+
+      unpinUser: (userId) => set((state) => {
+        const newPinned = state.pinnedUsers.filter(id => id !== userId);
+        localStorage.setItem("pinned-users", JSON.stringify(newPinned));
+        return { pinnedUsers: newPinned };
+      }),
+
+      deleteChat: async (userId) => {
+        try {
+          await axiosInstance.delete(`/messages/chat/${userId}`);
+          set((state) => ({
+            messages: state.selectedUser?._id === userId ? [] : state.messages,
+            users: state.users.filter(u => u._id !== userId),
+            selectedUser: state.selectedUser?._id === userId ? null : state.selectedUser,
+          }));
+          toast.success("Chat deleted successfully");
+        } catch (error) {
+          console.error("Error deleting chat:", error);
+          toast.error("Failed to delete chat");
+        }
+      },
+
       archiveUser: (userId) => set((state) => {
         if (userId === 'ai-bot') return state;
         const user = state.users.find(u => u._id === userId);
@@ -371,10 +449,19 @@ export const useChatStore = create(
           };
           const usersWithAI = nonArchivedUsers; // Do not inject AI into lists feeding user selection
           const pinnedUsers = get().pinnedUsers;
-          const sorted = [
+          const combined = [
             ...usersWithAI.filter(u => pinnedUsers.includes(u._id)),
             ...usersWithAI.filter(u => !pinnedUsers.includes(u._id)),
           ];
+          
+          // Stricter deduplication by _id to prevent React key warnings
+          const seen = new Set();
+          const sorted = combined.filter(u => {
+            if (!u || !u._id || seen.has(u._id)) return false;
+            seen.add(u._id);
+            return true;
+          });
+
           const prev = localStorage.getItem('chat-users');
           if (!prev || prev !== JSON.stringify(sorted)) {
             set({ users: sorted });
@@ -443,8 +530,14 @@ export const useChatStore = create(
               // fetch that user from backend and append
               try {
                 const usersRes = await axiosInstance.get('/messages/users');
-                const found = (usersRes.data || []).find(u => u._id === peerId);
-                if (found) set((state) => ({ users: [...state.users, found] }));
+                const list = Array.isArray(usersRes.data) ? usersRes.data : [];
+                const found = list.find(u => u._id === peerId);
+                if (found) {
+                  set((state) => {
+                    if (state.users.some(u => u._id === found._id)) return state;
+                    return { users: [...state.users, found] };
+                  });
+                }
               } catch (e) {}
             }
           } catch (e) {}
@@ -482,7 +575,7 @@ export const useChatStore = create(
               const res = await axiosInstance.get('/messages/users');
               const list = Array.isArray(res.data) ? res.data : [];
               peer = list.find(u => u._id === peerId) || null;
-              if (peer) {
+              if (peer && !get().users.some(u => u._id === peer._id)) {
                 set({ users: [...get().users, peer] });
               }
             } catch (e) {
@@ -572,7 +665,10 @@ export const useChatStore = create(
                 const fetched = Array.isArray(res.data) ? res.data : [];
                 const found = fetched.find(u => u._id === peerId);
                 if (found) {
-                  set((state) => ({ users: [...state.users, found] }));
+                  set((state) => {
+                    if (state.users.some(u => u._id === found._id)) return state;
+                    return { users: [...state.users, found] };
+                  });
                 }
               }
             } catch (e) {
@@ -591,6 +687,99 @@ export const useChatStore = create(
 
       aiMessages: JSON.parse(localStorage.getItem('aiMessages') || '[]'),
 
+      // --- E2EE Store Helpers ---
+      getSharedSecret: async (otherUserId, forceRefresh = false) => {
+        const { sharedSecrets, inFlightSecrets } = get();
+        
+        // If we have a secret and not forcing refresh, return it
+        if (!forceRefresh && sharedSecrets[otherUserId]) {
+          return sharedSecrets[otherUserId];
+        }
+
+        // If a derivation is already in flight for this user, return that promise
+        if (!forceRefresh && inFlightSecrets[otherUserId]) {
+          return await inFlightSecrets[otherUserId];
+        }
+
+        const derivationPromise = (async () => {
+          try {
+            const { authUser } = useAuthStore.getState();
+            if (!authUser) throw new Error("Auth user missing");
+
+            const privateKey = await getPrivateKey(authUser._id);
+            if (!privateKey) throw new Error("Private key missing locally");
+
+            const publicKeyJWK = await fetchUserPublicKey(otherUserId);
+            const publicKey = await importPublicKey(
+              typeof publicKeyJWK === 'string' ? JSON.parse(publicKeyJWK) : publicKeyJWK
+            );
+
+            const sharedSecret = await deriveSharedSecret(privateKey, publicKey);
+            
+            // Clean up inFlight and update sharedSecrets
+            set((state) => {
+              const nextInFlight = { ...state.inFlightSecrets };
+              delete nextInFlight[otherUserId];
+              return {
+                sharedSecrets: { ...state.sharedSecrets, [otherUserId]: sharedSecret },
+                inFlightSecrets: nextInFlight
+              };
+            });
+            return sharedSecret;
+          } catch (error) {
+            set((state) => {
+              const nextInFlight = { ...state.inFlightSecrets };
+              delete nextInFlight[otherUserId];
+              return { inFlightSecrets: nextInFlight };
+            });
+            throw error;
+          }
+        })();
+
+        set((state) => ({
+          inFlightSecrets: { ...state.inFlightSecrets, [otherUserId]: derivationPromise }
+        }));
+
+        return await derivationPromise;
+      },
+
+      smartEncrypt: async (plainText, otherUserId) => {
+        if (!plainText) return plainText;
+        try {
+          const secret = await get().getSharedSecret(otherUserId);
+          return await encryptMessage(plainText, secret);
+        } catch (error) {
+          console.warn("[E2EE] First encryption attempt failed, retrying with fresh key...", error);
+          try {
+            const freshSecret = await get().getSharedSecret(otherUserId, true);
+            return await encryptMessage(plainText, freshSecret);
+          } catch (retryError) {
+            console.error("[E2EE] Encryption failed after retry:", retryError);
+            throw retryError;
+          }
+        }
+      },
+
+      smartDecrypt: async (msg, otherUserId) => {
+        if (!msg || !msg.text || typeof msg.text !== "string" || !msg.text.includes(":")) return msg?.text || "";
+        
+        try {
+          // Attempt 1: Use current secret
+          const secret = await get().getSharedSecret(otherUserId);
+          return await decryptMessage(msg.text, secret);
+        } catch (error) {
+          console.warn("[E2EE] First decryption attempt failed, retrying with fresh key...", error);
+          try {
+            // Attempt 2: Force refresh public key and retry
+            const freshSecret = await get().getSharedSecret(otherUserId, true);
+            return await decryptMessage(msg.text, freshSecret);
+          } catch (retryError) {
+            console.error("[E2EE] Decryption failed after retry:", retryError);
+            return "[Message Decryption Error]";
+          }
+        }
+      },
+
       getMessages: async (userId, { limit = 30, before } = {}) => {
         set({ isMessagesLoading: true, hasMoreMessages: true, oldestLoadedMessage: null });
         try {
@@ -602,31 +791,14 @@ export const useChatStore = create(
             const res = await axiosInstance.get(`/messages/${userId}`, { params });
             let msgs = res.data.messages || [];
             const authUser = useAuthStore.getState().authUser;
-            const myPrivateKey = await getPrivateKey(authUser._id);
-            const publicKeyCache = new Map();
             const decryptPromises = msgs.map(async (msg) => {
               if (msg.senderId !== 'ai-bot' && msg.text && msg.text.includes(':')) {
-                try {
-                  let otherUserId = msg.senderId === authUser._id ? msg.receiverId : msg.senderId;
-                  let otherPublicKey = publicKeyCache.has(otherUserId)
-                    ? publicKeyCache.get(otherUserId)
-                    : await fetchUserPublicKey(otherUserId);
-                  publicKeyCache.set(otherUserId, otherPublicKey);
-                  const otherPublicKeyImported = await importPublicKey(
-                    typeof otherPublicKey === 'string' ? JSON.parse(otherPublicKey) : otherPublicKey
-                  );
-                  const sharedSecret = await deriveSharedSecret(myPrivateKey, otherPublicKeyImported);
-                  msg.text = await decryptMessage(msg.text, sharedSecret);
-                  if (
-                    msg.replyToText &&
-                    typeof msg.replyToText === 'string' &&
-                    /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(msg.replyToText)
-                  ) {
-                    try { msg.replyToText = await decryptMessage(msg.replyToText, sharedSecret); } catch {}
-                  }
-                } catch (e) {
-                  console.error('Decryption failed for message:', msg._id, e);
-                  msg.text = '[Unable to decrypt]';
+                let otherUserId = msg.senderId === authUser._id ? msg.receiverId : msg.senderId;
+                msg.text = await get().smartDecrypt(msg, otherUserId);
+                
+                // Also decrypt replyToText if needed
+                if (msg.replyToText && typeof msg.replyToText === 'string' && msg.replyToText.includes(':')) {
+                  msg.replyToText = await get().smartDecrypt({ text: msg.replyToText }, otherUserId);
                 }
               }
               return msg;
@@ -664,16 +836,32 @@ export const useChatStore = create(
         try {
           const before = (oldestLoadedMessage && oldestLoadedMessage.createdAt) || (messages && messages[0] && messages[0].createdAt);
           const res = await axiosInstance.get(`/messages/${userId}`, { params: { limit, before } });
-          if (res.data && Array.isArray(res.data.messages)) {
-            const newMessages = [...res.data.messages, ...messages];
+          let incoming = res.data.messages || [];
+          
+          const authUser = useAuthStore.getState().authUser;
+          const decryptPromises = incoming.map(async (msg) => {
+            if (msg.senderId !== 'ai-bot' && msg.text && msg.text.includes(':')) {
+              let otherUserId = msg.senderId === authUser._id ? msg.receiverId : msg.senderId;
+              msg.text = await get().smartDecrypt(msg, otherUserId);
+              if (msg.replyToText && typeof msg.replyToText === 'string' && msg.replyToText.includes(':')) {
+                msg.replyToText = await get().smartDecrypt({ text: msg.replyToText }, otherUserId);
+              }
+            }
+            return msg;
+          });
+          incoming = await Promise.all(decryptPromises);
+
+          if (incoming.length > 0) {
+            const newMessages = [...incoming, ...messages];
             set({
               messages: newMessages,
               hasMoreMessages: res.data.hasMore,
-              oldestLoadedMessage: res.data.messages.length > 0 ? res.data.messages[0] : oldestLoadedMessage,
+              oldestLoadedMessage: incoming[0],
             });
             localStorage.setItem(`chat-messages-${userId}`, JSON.stringify(newMessages));
           }
         } catch (error) {
+          console.error("Error loading older messages:", error);
         } finally {
           set({ isLoadingMore: false });
         }
@@ -720,60 +908,26 @@ export const useChatStore = create(
           }
         } else if (selectedUser) {
           try {
-            const recipientPublicKey = await fetchUserPublicKey(selectedUser._id);
-            const recipientPublicKeyJWK = typeof recipientPublicKey === 'string' ? JSON.parse(recipientPublicKey) : recipientPublicKey;
-            const recipientPublicKeyImported = await importPublicKey(recipientPublicKeyJWK);
-            const authUser = useAuthStore.getState().authUser;
-            const keypair = JSON.parse(localStorage.getItem(`ecc-keypair-${authUser._id}`));
-            const senderPrivateKeyImported = await importPrivateKey(keypair.privateKey);
-            const sharedSecret = await deriveSharedSecret(senderPrivateKeyImported, recipientPublicKeyImported);
-            const payload = {};
-            if (messageData.text) {
-              payload.text = await encryptMessage(messageData.text, sharedSecret);
+            const payload = { ...messageData };
+            
+            // Encrypt text if present
+            if (payload.text) {
+              payload.text = await get().smartEncrypt(payload.text, selectedUser._id);
             }
-            if (messageData.image) payload.image = messageData.image;
-            if (messageData.video) payload.video = messageData.video;
-            if (messageData.audio) payload.audio = messageData.audio;
-            if (messageData.document) payload.document = messageData.document;
-            if (messageData.fileName) payload.fileName = messageData.fileName;
-            if (messageData.fileSize) payload.fileSize = messageData.fileSize;
-            if (messageData.replyTo) payload.replyTo = messageData.replyTo;
-            if (messageData.isForwarded) {
-              payload.isForwarded = messageData.isForwarded;
-              payload.originalSender = messageData.originalSender;
-              payload.originalMessageId = messageData.originalMessageId;
-            }
+            
             const res = await axiosInstance.post(`/messages/send/${selectedUser._id}`, payload);
             const sentMessage = res.data;
-            // Replace ciphertext with plaintext we just sent (for immediate UI)
+            
+            // For immediate UI display, keep the plaintext
             if (sentMessage.text && messageData.text) {
               sentMessage.text = messageData.text;
             }
-            // Decrypt reply preview if backend echoed encrypted value
-            if (
-              sentMessage.replyToText &&
-              typeof sentMessage.replyToText === 'string' &&
-              /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(sentMessage.replyToText)
-            ) {
-              try {
-                sentMessage.replyToText = await decryptMessage(sentMessage.replyToText, sharedSecret);
-              } catch {}
+            
+            // Decrypt any other fields that might come back encrypted (like replyToText)
+            if (sentMessage.replyToText && typeof sentMessage.replyToText === 'string' && sentMessage.replyToText.includes(':')) {
+               sentMessage.replyToText = await get().smartDecrypt({ text: sentMessage.replyToText }, selectedUser._id);
             }
-            // Decrypt any media-like fields if they were returned encrypted
-            for (const field of ['image', 'audio', 'video', 'document']) {
-              if (
-                sentMessage[field] &&
-                typeof sentMessage[field] === 'string' &&
-                /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(sentMessage[field]) &&
-                !sentMessage[field].startsWith('http')
-              ) {
-                try {
-                  sentMessage[field] = await decryptMessage(sentMessage[field], sharedSecret);
-                } catch {
-                  sentMessage[field] = '[Unable to decrypt]';
-                }
-              }
-            }
+
             const newMessages = [...messages, sentMessage];
             set((state) => ({
               messages: newMessages,
@@ -843,62 +997,26 @@ export const useChatStore = create(
         socket.off("messageDelivered");
         const authUser = useAuthStore.getState().authUser;
         socket.on("newMessage", async (newMessage) => {
-          if (newMessage.senderId !== 'ai-bot') {
-            try {
-              let otherUserId = newMessage.senderId === authUser._id ? newMessage.receiverId : newMessage.senderId;
-              const otherPublicKey = await fetchUserPublicKey(otherUserId);
-              const otherPublicKeyImported = await importPublicKey(
-                typeof otherPublicKey === 'string' ? JSON.parse(otherPublicKey) : otherPublicKey
-              );
-              const myPrivateKey = await getPrivateKey(authUser._id);
-              const sharedSecret = await deriveSharedSecret(myPrivateKey, otherPublicKeyImported);
-              if (newMessage.text && newMessage.text.includes(':') && /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(newMessage.text)) {
-                newMessage.text = await decryptMessage(newMessage.text, sharedSecret);
-              }
-              if (
-                newMessage.replyToText &&
-                typeof newMessage.replyToText === 'string' &&
-                /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(newMessage.replyToText)
-              ) {
-                try { newMessage.replyToText = await decryptMessage(newMessage.replyToText, sharedSecret); } catch {}
-              }
-              for (const field of ['image', 'audio', 'video', 'document']) {
-                if (newMessage[field] && typeof newMessage[field] === 'string' &&
-                    /^[A-Za-z0-9+/=\-_]+:[A-Za-z0-9+/=\-_]+$/.test(newMessage[field]) &&
-                    !newMessage[field].startsWith('http')) {
-                  try {
-                    newMessage[field] = await decryptMessage(newMessage[field], sharedSecret);
-                  } catch {
-                    newMessage[field] = '[Unable to decrypt]';
-                  }
-                }
-              }
-            } catch (e) {
-              if (newMessage.text && newMessage.text.includes(':')) {
-                newMessage.text = '[Unable to decrypt]';
-              }
+          const { selectedUser, messages } = get();
+          const isForSelectedUser = 
+            (newMessage.senderId === selectedUser?._id) || 
+            (newMessage.receiverId === selectedUser?._id);
+
+          if (isForSelectedUser) {
+            // Decrypt incoming message
+            const otherUserId = newMessage.senderId === useAuthStore.getState().authUser?._id 
+              ? newMessage.receiverId 
+              : newMessage.senderId;
+            
+            newMessage.text = await get().smartDecrypt(newMessage, otherUserId);
+            
+            // Also decrypt replyToText if needed
+            if (newMessage.replyToText && typeof newMessage.replyToText === 'string' && newMessage.replyToText.includes(':')) {
+              newMessage.replyToText = await get().smartDecrypt({ text: newMessage.replyToText }, otherUserId);
             }
+
+            set({ messages: [...messages, newMessage] });
           }
-          set((state) => {
-            const isCurrentChat = state.selectedUser && newMessage.senderId === state.selectedUser._id;
-            const updatedMessages = [...state.messages, newMessage];
-            if (state.selectedUser && state.selectedUser._id) {
-              localStorage.setItem(`chat-messages-${state.selectedUser._id}`, JSON.stringify(updatedMessages));
-            }
-            return {
-              messages: updatedMessages,
-              users: state.users.map((user) =>
-                user._id === newMessage.senderId || user._id === newMessage.receiverId
-                  ? { ...user, lastMessage: { ...newMessage, content: newMessage.text } }
-                  : user
-              ),
-              archivedUsers: state.archivedUsers.map((user) =>
-                user._id === newMessage.senderId || user._id === newMessage.receiverId
-                  ? { ...user, lastMessage: { ...newMessage, content: newMessage.text } }
-                  : user
-              ),
-            };
-          });
           // If this chat is currently open for the receiver, mark messages as read immediately
           try {
             const currentSelected = get().selectedUser;
@@ -1155,25 +1273,68 @@ export const useChatStore = create(
 
       setupPeerConnection: () => {
         const { iceServers, pendingCaller, selectedUser, isReconnecting, resetCallState, setRemoteStream, iceCandidateBuffer } = get();
-        const pc = new window.RTCPeerConnection(iceServers);
+        const authUser = useAuthStore.getState().authUser;
+        const socket = useAuthStore.getState().socket;
+        
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" },
+            { urls: "stun:stun3.l.google.com:19302" },
+            { urls: "stun:stun4.l.google.com:19302" },
+            { urls: "stun:stun.ekiga.net" },
+            { urls: "stun:stun.ideasip.com" },
+            { urls: "stun:stun.rixtelecom.se" },
+            { urls: "stun:stun.schlund.de" },
+            { urls: "stun:stun.stunprotocol.org:3478" },
+            { urls: "stun:stun.voiparound.com" },
+            { urls: "stun:stun.voipbuster.com" },
+            { urls: "stun:stun.voipstunt.com" },
+            { urls: "stun:stun.voxgratia.org" },
+          ],
+          iceCandidatePoolSize: 10,
+        });
+
+        // Use a persistent remote description set flag and buffer
+        let isRemoteDescriptionSet = false;
+        const candidateBuffer = [];
+
         set({ peerConnectionRef: pc });
         console.log("[Call] PeerConnection created", pc);
-        pc.onicecandidate = (e) => {
-          const socket = useAuthStore.getState().socket;
-          if (e.candidate && socket) {
-            socket.emit("call:ice-candidate", {
-              to: pendingCaller?.from || selectedUser?._id,
-              candidate: e.candidate,
-            });
-            console.log("[Call] Sent ICE candidate", e.candidate);
-          } else if (!socket) {
-            console.error("[Call] Socket is undefined in onicecandidate");
+
+        // ICE candidates will be handled globally in initializeCallSocket to avoid duplication
+
+
+        // This should be called by the signaling handlers once setRemoteDescription is done
+        pc.onRemoteDescriptionSet = async () => {
+          isRemoteDescriptionSet = true;
+          console.log("[Call] Remote description set, processing", candidateBuffer.length, "buffered candidates");
+          while (candidateBuffer.length > 0) {
+            const candidate = candidateBuffer.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (e) {
+              console.warn("[Call] Error adding buffered candidate", e);
+            }
           }
         };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("call:ice-candidate", {
+              candidate: event.candidate,
+              to: pendingCaller?.from || selectedUser?._id,
+              callId: get().callState.callId
+            });
+          }
+        };
+
         pc.ontrack = (e) => {
           console.log("[Call] ontrack event, remoteStream tracks:", e.streams[0]?.getTracks().map(t => t.kind), e.streams[0]);
           setRemoteStream(e.streams[0]);
         };
+
         pc.oniceconnectionstatechange = () => {
           console.log("[Call] ICE connection state:", pc.iceConnectionState);
           switch (pc.iceConnectionState) {
@@ -1221,10 +1382,12 @@ export const useChatStore = create(
         }
       },
 
-      handleCall: async (isVideo) => {
-        const { selectedUser, setCallState, setLocalStream, setupPeerConnection, iceServers } = get();
+      handleCall: async (isVideo, targetUserOverride = null) => {
+        const { setCallState, setLocalStream, setupPeerConnection } = get();
+        const selectedUser = targetUserOverride || get().selectedUser;
         const authUser = useAuthStore.getState().authUser;
         const socket = useAuthStore.getState().socket;
+
         if (!selectedUser || !authUser || !socket) {
           toast.error("Cannot start call: missing user or socket");
           return;
@@ -1279,10 +1442,12 @@ export const useChatStore = create(
           localStream.getTracks().forEach((track) => {
             pc.addTrack(track, localStream);
           });
+
+          // Wait for remote description if we were doing a re-offer, but for a new call
+          // we just create the offer.
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          // Do NOT start the timer here; wait until the connection is established
-          const initiatedAt = Date.now();
+
           socket.emit("call:offer", {
             to: selectedUser._id,
             from: authUser._id,
@@ -1290,39 +1455,25 @@ export const useChatStore = create(
             avatar: authUser.profilePic,
             offer,
             isVideoCall: isVideo && constraints.video !== false,
-            callId, // Include callId in offer
+            callId,
           });
-          // Log the outgoing call as initiated
+
           get().addCallLogToBackend({
             receiver: selectedUser._id,
             type: isVideo && constraints.video !== false ? "video" : "audio",
             direction: "outgoing",
             status: "initiated",
-            startedAt: initiatedAt,
-            callId, // Include callId
+            startedAt: Date.now(),
+            callId,
           });
         } catch (err) {
-          let userMsg = "Failed to start call: ";
-          if (err.name === 'NotAllowedError') {
-            userMsg += 'Camera or microphone access denied. Please allow permission.';
-          } else if (err.name === 'NotFoundError') {
-            userMsg += 'No camera or microphone found. Please connect a device.';
-          } else if (err.name === 'NotReadableError') {
-            userMsg += 'Camera or microphone is already in use by another application.';
-          } else {
-            userMsg += err.message || err;
-          }
+          console.error("[Call] handleCall error:", err);
+          let userMsg = "Failed to start call: " + (err.message || err);
           toast.error(userMsg);
-          setCallState({
-            isModalOpen: false,
-            isIncoming: false,
-            status: "",
-            isVideoCall: false,
-            error: userMsg,
-            callId: null,
-          });
+          get().resetCallState();
         }
       },
+
 
       initializeCallSocket: () => {
         const { resetCallState, setPendingCaller, setCallState, setCallStartTime, setupPeerConnection, setLocalStream, setRemoteStream, addCallLogToBackend } = get();
@@ -1361,7 +1512,18 @@ export const useChatStore = create(
         socket.on("call:answer", async (data) => {
           const { peerConnectionRef, setCallState, addCallLogToBackend, callState } = get();
           if (peerConnectionRef) {
-            await peerConnectionRef.setRemoteDescription(new RTCSessionDescription(data.answer));
+            // Guard: only set remote description if we are in a state that expects an answer
+            if (peerConnectionRef.signalingState === "have-local-offer") {
+              try {
+                await peerConnectionRef.setRemoteDescription(new RTCSessionDescription(data.answer));
+                if (peerConnectionRef.onRemoteDescriptionSet) await peerConnectionRef.onRemoteDescriptionSet();
+                console.log("[Call] Remote description (answer) set successfully");
+              } catch (e) {
+                console.error("[Call] Failed to set remote description (answer):", e);
+              }
+            } else {
+              console.warn("[Call] Received answer while in signaling state:", peerConnectionRef.signalingState);
+            }
           }
           setCallState({ status: "In call", error: "" });
           // Update call log to "answered" for caller
@@ -1377,14 +1539,17 @@ export const useChatStore = create(
           }
         });
 
-        socket.on("call:ice-candidate", async (data) => {
+        socket.on("call:ice-candidate", async ({ candidate }) => {
           const { peerConnectionRef } = get();
-          if (peerConnectionRef && data.candidate) {
-            try {
-              await peerConnectionRef.addIceCandidate(new RTCIceCandidate(data.candidate));
-            } catch (e) {
-              console.error("[Call] Error adding ICE candidate", e);
+          try {
+            if (peerConnectionRef.remoteDescription && peerConnectionRef.remoteDescription.type && peerConnectionRef.signalingState !== "closed") {
+              await peerConnectionRef.addIceCandidate(new RTCIceCandidate(candidate));
+            } else {
+              console.log("[WebRTC] Buffering ICE candidate because remoteDescription is not set");
+              get().iceCandidateBuffer.push(candidate);
             }
+          } catch (e) {
+            console.error("[WebRTC] Error adding received ice candidate", e);
           }
         });
 
@@ -1496,49 +1661,52 @@ export const useChatStore = create(
             }
           }
           setLocalStream(localStream);
-          const pc = setupPeerConnection();
+          setLocalStream(localStream);
+          
+          let pc = get().peerConnectionRef;
+          if (!pc) pc = setupPeerConnection();
+
           localStream.getTracks().forEach((track) => {
             pc.addTrack(track, localStream);
           });
-          await pc.setRemoteDescription(new RTCSessionDescription(pendingCaller.offer));
+
+          // CRITICAL: Must set remote description (the offer) BEFORE creating an answer
+          // If we haven't set it yet, do it now.
+          if (pc.signalingState !== "have-remote-offer") {
+             try {
+                await pc.setRemoteDescription(new RTCSessionDescription(pendingCaller.offer));
+                console.log("[Call] Remote description (offer) set in handleAccept");
+                if (pc.onRemoteDescriptionSet) await pc.onRemoteDescriptionSet();
+             } catch (e) {
+                console.error("[Call] Failed to set remote description in handleAccept:", e);
+                throw new Error("Failed to set remote description from caller.");
+             }
+          }
+
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
+
           socket.emit("call:answer", {
             to: pendingCaller.from,
-            from: authUser._id,
             answer,
-            isVideoCall: !!pendingCaller.isVideoCall && constraints.video !== false,
-            callId: pendingCaller.callId, // Include callId in answer
+            isVideoCall: !!pendingCaller.isVideoCall,
+            callId: pendingCaller.callId
           });
-          // Log the answered call for callee
+
+          setCallState({ status: "In call", error: "" });
+          
           addCallLogToBackend({
             receiver: pendingCaller.from,
-            type: pendingCaller.isVideoCall && constraints.video !== false ? "video" : "audio",
+            type: pendingCaller.isVideoCall ? "video" : "audio",
             direction: "incoming",
             status: "answered",
             startedAt: Date.now(),
             callId: pendingCaller.callId,
           });
         } catch (err) {
-          let userMsg = "Failed to accept call: ";
-          if (err.name === 'NotAllowedError') {
-            userMsg += 'Camera or microphone access denied. Please allow permission.';
-          } else if (err.name === 'NotFoundError') {
-            userMsg += 'No camera or microphone found. Please connect a device.';
-          } else if (err.name === 'NotReadableError') {
-            userMsg += 'Camera or microphone is already in use by another application.';
-          } else {
-            userMsg += err.message || err;
-          }
-          toast.error(userMsg);
-          setCallState({
-            isModalOpen: false,
-            isIncoming: false,
-            status: "",
-            isVideoCall: false,
-            error: userMsg,
-            callId: null,
-          });
+          console.error("[Call] handleAccept error:", err);
+          toast.error("Failed to accept call: " + (err.message || err));
+          get().resetCallState();
         }
       },
 
@@ -1623,7 +1791,15 @@ export const useChatStore = create(
       loadGroups: async () => {
         try {
           const res = await axiosInstance.get('/groups');
-          set({ groups: res.data || [] });
+          const groups = Array.isArray(res.data) ? res.data : [];
+          // Deduplicate groups by _id
+          const seen = new Set();
+          const uniqueGroups = groups.filter(g => {
+            if (!g._id || seen.has(g._id)) return false;
+            seen.add(g._id);
+            return true;
+          });
+          set({ groups: uniqueGroups });
         } catch (error) {
           console.error('Error loading groups:', error);
         }
@@ -1634,7 +1810,7 @@ export const useChatStore = create(
           const res = await axiosInstance.post('/groups', groupData);
           const newGroup = res.data;
           set(state => ({
-            groups: [newGroup, ...state.groups]
+            groups: [newGroup, ...state.groups.filter(g => g._id !== newGroup._id)]
           }));
           return newGroup;
         } catch (error) {
@@ -1656,12 +1832,9 @@ export const useChatStore = create(
           const res = await axiosInstance.post(`/messages/group/${selectedGroup._id}`, messageData);
           const sentMessage = res.data;
           
-          // Add the message to the current messages
           const newMessages = [...messages, sentMessage];
-          set({ messages: newMessages });
-          
-          // Update group's last message in groups list
           set((state) => ({
+            messages: newMessages,
             groups: state.groups.map((group) =>
               group._id === selectedGroup._id
                 ? { ...group, lastMessage: { ...sentMessage, content: sentMessage.text || 'Media' } }
@@ -1711,11 +1884,19 @@ export const useChatStore = create(
       loadGroupsForSidebar: async () => {
         try {
           const res = await axiosInstance.get('/groups');
-          const groups = res.data || [];
+          const groups = Array.isArray(res.data) ? res.data : [];
+          
+          // Deduplicate groups by _id
+          const seen = new Set();
+          const uniqueGroups = groups.filter(g => {
+            if (!g._id || seen.has(g._id)) return false;
+            seen.add(g._id);
+            return true;
+          });
           
           // For each group, get the last message
           const groupsWithLastMessage = await Promise.all(
-            groups.map(async (group) => {
+            uniqueGroups.map(async (group) => {
               try {
                 const msgRes = await axiosInstance.get(`/messages/group/${group._id}?limit=1`);
                 const lastMsg = msgRes.data.messages?.[0];

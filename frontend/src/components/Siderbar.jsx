@@ -46,7 +46,7 @@ function formatCallHistoryDate(dateString) {
 // NOTE: Using the shared `UserSelectModal` component (with Invite/Chat buttons)
 
 export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextMenu }) => {
-  const { getUsers, users, selectedUser, setSelectedUser, isUsersLoading, isCallHistoryLoading, callLogs, deleteChat, pinUser, unpinUser, isUserPinned, favorites, addFavorite, removeFavorite, isFavorite, archiveUser, unarchiveUser, isArchived, selectedCalls, isCallSelectionMode, toggleCallSelection, selectAllCalls, clearCallSelection, setCallSelectionMode, deleteSelectedCalls, acceptedPeers, loadAcceptedPeers, sendInvitation, groups, loadGroupsForSidebar, selectedGroup, setSelectedGroup } = useChatStore();
+  const { getUsers, users, selectedUser, setSelectedUser, isUsersLoading, isCallHistoryLoading, callLogs, getCallHistory, deleteChat, pinUser, unpinUser, isUserPinned, favorites, addFavorite, removeFavorite, isFavorite, archiveUser, unarchiveUser, isArchived, selectedCalls, isCallSelectionMode, toggleCallSelection, selectAllCalls, clearCallSelection, setCallSelectionMode, deleteSelectedCalls, acceptedPeers, loadAcceptedPeers, sendInvitation, groups, loadGroupsForSidebar, selectedGroup, setSelectedGroup } = useChatStore();
   const { onlineUsers, authUser, socket } = useAuthStore();
   const [showOnlineOnly, setShowOnlineOnly] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
@@ -60,7 +60,6 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
 
   const [search, setSearch] = useState("");
 
-  const [callHistory, setCallHistory] = useState([]);
   const [callSearch, setCallSearch] = useState("");
 
   // Context menu for call items
@@ -140,26 +139,10 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
   }, [authUser, socket]);
 
   useEffect(() => {
-    const fetchCalls = async (showLoading = false) => {
-      try {
-        if (showLoading) {
-          useChatStore.setState({ isCallHistoryLoading: true });
-        }
-        const res = await axiosInstance.get("/calls");
-        setCallHistory(res.data);
-      } catch (error) {
-        setCallHistory([]);
-      } finally {
-        if (showLoading) {
-          useChatStore.setState({ isCallHistoryLoading: false });
-        }
-      }
-    };
-    
     if (showCalls) {
-      fetchCalls(true);
+      getCallHistory();
     }
-  }, [showCalls]);
+  }, [showCalls, getCallHistory]);
 
   // Listen for new messages to unhide users
   useEffect(() => {
@@ -268,7 +251,42 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
     }
     
     return out;
-  }, [displayedUsers, search]);
+  }, [displayedUsers]);
+
+  // Decrypt last messages for sidebar users
+  useEffect(() => {
+    const decryptLastMessages = async () => {
+      const newDecrypted = { ...decryptedLastMessages };
+      let changed = false;
+      const authUser = useAuthStore.getState().authUser;
+      if (!authUser) return;
+
+      for (const user of uniqueDisplayedUsers) {
+        const msg = user.lastMessage;
+        if (msg?.text && typeof msg.text === 'string' && msg.text.includes(':')) {
+          // If message is different from what we might have decrypted (using _id or timestamp as proxy)
+          // Simple check: always try to decrypt if it looks encrypted, smartDecrypt handles caching
+          try {
+            const dec = await useChatStore.getState().smartDecrypt(msg, user._id);
+            if (dec && dec !== "[Message Decryption Error]" && newDecrypted[user._id] !== dec) {
+              newDecrypted[user._id] = dec;
+              changed = true;
+            }
+          } catch (e) {
+            console.error("Failed to decrypt last message for", user._id, e);
+          }
+        }
+      }
+
+      if (changed) {
+        setDecryptedLastMessages(newDecrypted);
+      }
+    };
+
+    if (uniqueDisplayedUsers.length > 0) {
+      decryptLastMessages();
+    }
+  }, [uniqueDisplayedUsers]);
 
   // Handler for right-click
   const handleContextMenu = (e, message) => {
@@ -424,13 +442,14 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
   const markCallAsRead = async (callId) => {
     try {
       await axiosInstance.patch(`/calls/${callId}/read`);
-      // Update local state to reflect the change
-      setCallHistory(prev => 
-        prev.map(call => 
+      // Update store state to reflect the change
+      useChatStore.setState(state => ({
+        callLogs: state.callLogs.map(call => 
           call._id === callId ? { ...call, status: 'read' } : call
         )
-      );
+      }));
     } catch (error) {
+      console.error("Failed to mark call as read:", error);
     }
   };
 
@@ -441,8 +460,10 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
         case 'delete':
           // Delete call log from backend
           await axiosInstance.delete(`/calls/${call._id}`);
-          // Update local state
-          setCallHistory(prev => prev.filter(c => c._id !== call._id));
+          // Update store state
+          useChatStore.setState(state => ({
+            callLogs: state.callLogs.filter(c => c._id !== call._id)
+          }));
           toast.success('Call log deleted');
           break;
           
@@ -533,10 +554,10 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
 
   // Filter and sort call history
   const filteredCallHistory = useMemo(() => {
-    if (!callSearch.trim()) return callHistory;
+    if (!callSearch.trim()) return callLogs;
     const searchTerm = callSearch.toLowerCase();
-    return callHistory.filter(call => {
-      const user = call.receiver || call.caller || {};
+    return callLogs.filter(call => {
+      const user = (call.caller && call.caller._id === authUser?._id) ? call.receiver : (call.caller || {});
       return (
         user.fullName?.toLowerCase().includes(searchTerm) ||
         call.status?.toLowerCase().includes(searchTerm) ||
@@ -544,7 +565,7 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
         (call.direction && call.direction.toLowerCase().includes(searchTerm))
       );
     });
-  }, [callHistory, callSearch]);
+  }, [callLogs, callSearch]);
   
   // Group call history by date
   const groupedCallHistory = useMemo(() => {
@@ -601,7 +622,7 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
         y, 
         call,
         // Add user info for display
-        user: call.receiver || call.caller
+        user: (call.caller && call.caller._id === authUser?._id) ? call.receiver : (call.caller || {})
       });
     }, 10);
   };
@@ -848,7 +869,7 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
                   <span className="text-xs font-medium text-base-content">{date}</span>
                 </div>
                 {calls.map(call => {
-                  const user = call.receiver || call.caller || {};
+                  const user = (call.caller && call.caller._id === authUser?._id) ? call.receiver : (call.caller || {});
                   const isMissed = call.status === "missed";
                   const isIncoming = call.direction === "incoming";
                   

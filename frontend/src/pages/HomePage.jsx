@@ -3,6 +3,7 @@ import { ArchiveSidebar } from "../components/ArchiveSidebar";
 import NoChatSelected from "../components/NoChatSelected";
 import { ChatContainer } from "../components/ChatContainer";
 import { useChatStore } from "../store/useChatStore";
+import { useAuthStore } from "../store/useAuthStore";
 import { useState, useEffect, useRef } from "react";
 import ChatHeader from "../components/ChatHeader";
 import GroupChatHeader from "../components/GroupChatHeader";
@@ -14,6 +15,7 @@ import { toast } from "react-hot-toast";
 
 const HomePage = () => {
   const { selectedUser, selectedGroup, handleCall, setSelectedUser, setSelectedGroup, favorites, removeFavorite, users, archivedUsers, isArchived } = useChatStore();
+  const { authUser } = useAuthStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [currentMatch, setCurrentMatch] = useState(0);
@@ -65,7 +67,7 @@ const HomePage = () => {
   // Call Info Panel for main area
   const renderCallInfo = () => {
     const call = selectedCall;
-    const user = call.receiver || call.caller || {};
+    const user = (call.caller && call.caller._id === authUser?._id) ? call.receiver : (call.caller || {});
     const isMissed = call.status === "missed";
     const isIncoming = call.direction === "incoming";
     const callType = call.type === "video" ? "video call" : "voice call";

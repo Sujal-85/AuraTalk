@@ -10,61 +10,6 @@ import ConfirmModal from './ConfirmModal';
 import DOMPurify from 'dompurify';
 
 // Import E2EE helpers (copy from useChatStore.js)
-async function fetchUserPublicKey(userId) {
-  const res = await axiosInstance.get(`/auth/public-key/${userId}`);
-  return res.data.publicKey;
-}
-async function importPublicKey(jwk) {
-  return await window.crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    []
-  );
-}
-async function importPrivateKey(jwk) {
-  return await window.crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveKey", "deriveBits"]
-  );
-}
-async function deriveSharedSecret(privateKey, publicKey) {
-  return await window.crypto.subtle.deriveKey(
-    {
-      name: "ECDH",
-      public: publicKey,
-    },
-    privateKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
-}
-async function decryptMessage(ciphertext, sharedSecret) {
-  try {
-    const [ivB64, ctB64] = ciphertext.split(":");
-    const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
-    const ct = Uint8Array.from(atob(ctB64), c => c.charCodeAt(0));
-    const dec = new TextDecoder();
-    const plain = await window.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
-      sharedSecret,
-      ct
-    );
-    return dec.decode(plain);
-  } catch (e) {
-    return '[Unable to decrypt]';
-  }
-}
-async function getPrivateKey(userId) {
-  const keypair = JSON.parse(localStorage.getItem(`ecc-keypair-${userId}`));
-  if (!keypair || !keypair.privateKey) return null;
-  return await importPrivateKey(keypair.privateKey);
-}
 
 function formatLastMessageDate(dateString) {
   if (!dateString) return "";
@@ -135,27 +80,18 @@ export const ArchiveSidebar = () => {
     async function decryptAllLastMessages() {
       if (!authUser) return;
       const newDecrypted = {};
+      const { smartDecrypt } = useChatStore.getState();
+      
       for (const user of filteredArchivedUsers) {
         const lastMsg = user.lastMessage;
-        if (lastMsg && lastMsg.type === 'text' && typeof lastMsg.content === 'string' && lastMsg.content.includes(':')) {
+        const msgText = lastMsg?.text ?? lastMsg?.content;
+        
+        if (lastMsg && typeof msgText === 'string') {
           try {
-            let otherUserId = user._id;
-            if (lastMsg.senderId === authUser._id) {
-              otherUserId = user._id;
-            } else if (lastMsg.senderId) {
-              otherUserId = lastMsg.senderId;
-            }
-            const myPrivateKey = await getPrivateKey(authUser._id);
-            const otherPublicKeyRaw = await fetchUserPublicKey(otherUserId);
-            const otherPublicKey = typeof otherPublicKeyRaw === 'string' ? JSON.parse(otherPublicKeyRaw) : otherPublicKeyRaw;
-            const otherPublicKeyImported = await importPublicKey(otherPublicKey);
-            const sharedSecret = await deriveSharedSecret(myPrivateKey, otherPublicKeyImported);
-            newDecrypted[user._id] = await decryptMessage(lastMsg.content, sharedSecret);
+            newDecrypted[user._id] = await smartDecrypt(msgText, user._id);
           } catch (e) {
-            newDecrypted[user._id] = '[Unable to decrypt]';
+            newDecrypted[user._id] = msgText;
           }
-        } else if (lastMsg && lastMsg.type === 'text') {
-          newDecrypted[user._id] = lastMsg.content;
         }
       }
       setDecryptedLastMessages(newDecrypted);
