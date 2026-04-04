@@ -1452,14 +1452,20 @@ export const useChatStore = create(
           set({ peerConnectionRef: null });
         }
         if (localStream) {
+          console.log("[Call] Stopping local stream tracks...");
           localStream.getTracks().forEach((track) => {
             try {
-              if (track.readyState === "live") track.stop();
+              console.log("[Call] Stopping track:", track.kind, track.id, "readyState:", track.readyState);
+              if (track.readyState === "live") {
+                track.stop();
+                console.log("[Call] Track stopped:", track.kind);
+              }
             } catch (e) {
               console.warn("[Call] Error stopping local track:", e);
             }
           });
           set({ localStream: null });
+          console.log("[Call] Local stream cleared");
         }
       },
 
