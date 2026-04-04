@@ -105,6 +105,8 @@ async function decryptMessage(ciphertext, sharedSecret) {
     const iv = Uint8Array.from(atob(ivB64), c => c.charCodeAt(0));
     const ct = Uint8Array.from(atob(ctB64), c => c.charCodeAt(0));
     
+    if (!sharedSecret) throw new Error("No shared secret available");
+    
     const dec = new TextDecoder();
     const plain = await window.crypto.subtle.decrypt(
       { name: "AES-GCM", iv },
@@ -112,17 +114,54 @@ async function decryptMessage(ciphertext, sharedSecret) {
       ct
     );
     const decoded = dec.decode(plain);
-    console.log('[E2EE] Decrypted text:', decoded);
     return decoded;
   } catch (e) {
-    console.error('[E2EE] Decryption error:', e, 'Ciphertext:', ciphertext);
-    throw e;
+    const isKeyMissing = !sharedSecret;
+    console.error('[E2EE] Decryption failed:', e.message, '| Reason:', isKeyMissing ? 'No shared secret' : 'Key mismatch or corrupted data');
+    if (isKeyMissing) {
+      return "🔒 [Cannot decrypt - keys missing. New messages will work.]";
+    }
+    return "🔒 [Cannot decrypt - key mismatch. Keys may have been regenerated.]";
   }
 }
 
+async function generateAndStoreKeyPair(userId) {
+  console.log('[E2EE] Generating new key pair for user:', userId);
+  const keyPair = await window.crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveKey", "deriveBits"]
+  );
+  const publicKeyJwk = await window.crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  const privateKeyJwk = await window.crypto.subtle.exportKey("jwk", keyPair.privateKey);
+  const keyData = { publicKey: publicKeyJwk, privateKey: privateKeyJwk };
+  localStorage.setItem(`ecc-keypair-${userId}`, JSON.stringify(keyData));
+  
+  // Upload public key to backend
+  try {
+    await axiosInstance.put("/auth/update-public-key", { publicKey: publicKeyJwk });
+    console.log('[E2EE] Public key uploaded to backend');
+  } catch (e) {
+    console.error('[E2EE] Failed to upload public key:', e);
+  }
+  
+  return keyData;
+}
+
 async function getPrivateKey(userId) {
-  const keypair = JSON.parse(localStorage.getItem(`ecc-keypair-${userId}`));
-  if (!keypair || !keypair.privateKey) return null;
+  let keypair = null;
+  try {
+    keypair = JSON.parse(localStorage.getItem(`ecc-keypair-${userId}`));
+  } catch {
+    keypair = null;
+  }
+  
+  // If no keypair exists, generate one
+  if (!keypair || !keypair.privateKey) {
+    console.log('[E2EE] No private key found, generating new keypair...');
+    keypair = await generateAndStoreKeyPair(userId);
+  }
+  
   return await importPrivateKey(keypair.privateKey);
 }
 
@@ -764,20 +803,173 @@ export const useChatStore = create(
         if (!msg || !msg.text || typeof msg.text !== "string" || !msg.text.includes(":")) return msg?.text || "";
         
         try {
-          // Attempt 1: Use current secret
           const secret = await get().getSharedSecret(otherUserId);
-          return await decryptMessage(msg.text, secret);
-        } catch (error) {
-          console.warn("[E2EE] First decryption attempt failed, retrying with fresh key...", error);
-          try {
-            // Attempt 2: Force refresh public key and retry
+          const result = await decryptMessage(msg.text, secret);
+          // If decryption returned the fallback, try once with fresh key
+          if (result.startsWith("🔒 [")) {
             const freshSecret = await get().getSharedSecret(otherUserId, true);
             return await decryptMessage(msg.text, freshSecret);
-          } catch (retryError) {
-            console.error("[E2EE] Decryption failed after retry:", retryError);
-            return "[Message Decryption Error]";
           }
+          return result;
+        } catch (error) {
+          return "🔒 [Encrypted message]";
         }
+      },
+
+      // --- E2EE Key Backup/Restore (like WhatsApp) ---
+      exportEncryptedKeys: async (password) => {
+        try {
+          const { authUser } = useAuthStore.getState();
+          if (!authUser || !authUser._id) throw new Error("Not logged in");
+          
+          const keypairRaw = localStorage.getItem(`ecc-keypair-${authUser._id}`);
+          if (!keypairRaw) throw new Error("No keys found to backup");
+          
+          const keypair = JSON.parse(keypairRaw);
+          
+          // Derive key from password using PBKDF2
+          const enc = new TextEncoder();
+          const passwordKey = await window.crypto.subtle.importKey(
+            "raw",
+            enc.encode(password),
+            { name: "PBKDF2" },
+            false,
+            ["deriveKey"]
+          );
+          
+          const salt = window.crypto.getRandomValues(new Uint8Array(16));
+          const derivedKey = await window.crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
+            passwordKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt"]
+          );
+          
+          // Encrypt the keypair
+          const iv = window.crypto.getRandomValues(new Uint8Array(12));
+          const encrypted = await window.crypto.subtle.encrypt(
+            { name: "AES-GCM", iv },
+            derivedKey,
+            enc.encode(JSON.stringify(keypair))
+          );
+          
+          // Create backup object
+          const backup = {
+            version: 1,
+            userId: authUser._id,
+            salt: btoa(String.fromCharCode(...salt)),
+            iv: btoa(String.fromCharCode(...iv)),
+            data: btoa(String.fromCharCode(...new Uint8Array(encrypted))),
+            createdAt: new Date().toISOString()
+          };
+          
+          return backup;
+        } catch (error) {
+          console.error("[E2EE] Export failed:", error);
+          throw error;
+        }
+      },
+
+      downloadKeyBackup: async (password) => {
+        try {
+          const backup = await get().exportEncryptedKeys(password);
+          const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `auratalk-keys-${backup.userId}-${Date.now()}.backup`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          toast.success('Key backup downloaded. Keep this file safe!');
+          return true;
+        } catch (error) {
+          toast.error('Failed to export keys: ' + error.message);
+          return false;
+        }
+      },
+
+      restoreKeysFromBackup: async (backupData, password) => {
+        try {
+          const { authUser } = useAuthStore.getState();
+          if (!authUser || !authUser._id) throw new Error("Not logged in");
+          
+          // Validate backup
+          if (!backupData || !backupData.salt || !backupData.iv || !backupData.data) {
+            throw new Error("Invalid backup file format");
+          }
+          
+          // Derive key from password
+          const enc = new TextEncoder();
+          const passwordKey = await window.crypto.subtle.importKey(
+            "raw",
+            enc.encode(password),
+            { name: "PBKDF2" },
+            false,
+            ["deriveKey"]
+          );
+          
+          const salt = Uint8Array.from(atob(backupData.salt), c => c.charCodeAt(0));
+          const iv = Uint8Array.from(atob(backupData.iv), c => c.charCodeAt(0));
+          const encryptedData = Uint8Array.from(atob(backupData.data), c => c.charCodeAt(0));
+          
+          const derivedKey = await window.crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
+            passwordKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["decrypt"]
+          );
+          
+          // Decrypt the keypair
+          const decrypted = await window.crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            derivedKey,
+            encryptedData
+          );
+          
+          const dec = new TextDecoder();
+          const keypair = JSON.parse(dec.decode(decrypted));
+          
+          if (!keypair.publicKey || !keypair.privateKey) {
+            throw new Error("Invalid key data in backup");
+          }
+          
+          // Store the restored keys
+          localStorage.setItem(`ecc-keypair-${authUser._id}`, JSON.stringify(keypair));
+          
+          // Upload public key to backend
+          await axiosInstance.put("/auth/update-public-key", { publicKey: keypair.publicKey });
+          
+          // Clear shared secrets cache so new ones are derived with restored keys
+          set({ sharedSecrets: {} });
+          
+          toast.success('Keys restored successfully! Old messages can now be decrypted.');
+          return true;
+        } catch (error) {
+          console.error("[E2EE] Restore failed:", error);
+          toast.error('Failed to restore keys: Wrong password or corrupted file');
+          return false;
+        }
+      },
+
+      importKeyBackupFromFile: async (file, password) => {
+        try {
+          const text = await file.text();
+          const backup = JSON.parse(text);
+          return await get().restoreKeysFromBackup(backup, password);
+        } catch (error) {
+          toast.error('Failed to read backup file: ' + error.message);
+          return false;
+        }
+      },
+
+      hasKeyBackup: () => {
+        const { authUser } = useAuthStore.getState();
+        if (!authUser || !authUser._id) return false;
+        return !!localStorage.getItem(`ecc-keypair-${authUser._id}`);
       },
 
       getMessages: async (userId, { limit = 30, before } = {}) => {

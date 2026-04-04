@@ -9,6 +9,7 @@ import toast from "react-hot-toast";
 import * as ScrollArea from '@radix-ui/react-scroll-area';
 import ConfirmModal from './ConfirmModal';
 import UserSelectModal from './UserSelectModal';
+import KeyBackupRestore from './KeyBackupRestore';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import {
@@ -78,6 +79,9 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
 
   const [showConfirm, setShowConfirm] = useState(false);
   const [userToDelete, setUserToDelete] = useState(null);
+
+  // Key backup/restore modal state
+  const [showKeyBackup, setShowKeyBackup] = useState(false);
 
   // AI bot removal state
   const [aiBotVisible, setAiBotVisible] = useState(true);
@@ -1117,9 +1121,20 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
             </button>
           </div>
           {/* Desktop header */}
-          <div className="border-b border-base-300 w-full p-4 lg:p-5 hidden lg:flex items-center gap-2">
-            <Users className="size-6" />
-            <span className="font-medium">Contacts</span>
+          <div className="border-b border-base-300 w-full p-4 lg:p-5 hidden lg:flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="size-6" />
+              <span className="font-medium">Contacts</span>
+            </div>
+            <button
+              onClick={() => setShowKeyBackup(true)}
+              className="p-2 hover:bg-base-200 rounded-lg text-slate-500 hover:text-violet-600 transition-colors"
+              title="Backup Encryption Keys"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </button>
           </div>
           {/* Desktop search bar */}
           <div className="hidden lg:flex px-5 pt-3 pb-1">
@@ -1584,6 +1599,10 @@ export const Sidebar = ({ showCalls = false, setSelectedCall, onCallItemContextM
           confirmText="Delete"
           cancelText="Cancel"
         />
+        {/* Key Backup/Restore Modal */}
+        {showKeyBackup && (
+          <KeyBackupRestore onClose={() => setShowKeyBackup(false)} />
+        )}
       </>
     );
   }
