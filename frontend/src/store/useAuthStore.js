@@ -329,6 +329,8 @@ export const useAuthStore = create((set,get) => ({
             query: {
                 userId: authUser._id,
             },
+            path: "/socket.io",
+            withCredentials: true,
             // Explicitly allow both transports so it works behind proxies/CDNs
             transports: ["polling", "websocket"],
             // Reconnect automatically if dropped
@@ -336,6 +338,8 @@ export const useAuthStore = create((set,get) => ({
             reconnectionAttempts: 5,
             reconnectionDelay: 1000,
         });
+        
+        console.log("[Socket] Connecting to:", Base_url, "with userId:", authUser._id);
 
         // ✅ Register ALL listeners BEFORE connect() to avoid race conditions
         socket.on("getOnlineUsers", (userIds) => {

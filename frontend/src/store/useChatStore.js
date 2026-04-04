@@ -302,7 +302,7 @@ export const useChatStore = create(
       getCallHistory: async (page = 1) => {
         set({ isCallHistoryLoading: true });
         try {
-          const res = await axiosInstance.get(`/calls/history?page=${page}`);
+          const res = await axiosInstance.get(`/calls?page=${page}`);
           const { calls: newCalls, hasMore } = res.data;
           set(state => {
             const combined = page === 1 ? newCalls : [...state.callLogs, ...newCalls];
@@ -1476,12 +1476,28 @@ export const useChatStore = create(
         
         const pc = new RTCPeerConnection({
           iceServers: [
+            // Public STUN servers
             { urls: "stun:stun.l.google.com:19302" },
             { urls: "stun:stun1.l.google.com:19302" },
             { urls: "stun:stun2.l.google.com:19302" },
             { urls: "stun:stun3.l.google.com:19302" },
             { urls: "stun:stun4.l.google.com:19302" },
-            { urls: "stun:stun.ekiga.net" },
+            // Free TURN servers for NAT traversal (required for production)
+            {
+              urls: "turn:openrelay.metered.ca:80",
+              username: "openrelayproject",
+              credential: "openrelayproject"
+            },
+            {
+              urls: "turn:openrelay.metered.ca:443",
+              username: "openrelayproject",
+              credential: "openrelayproject"
+            },
+            {
+              urls: "turn:openrelay.metered.ca:443?transport=tcp",
+              username: "openrelayproject",
+              credential: "openrelayproject"
+            },
             { urls: "stun:stun.ideasip.com" },
             { urls: "stun:stun.rixtelecom.se" },
             { urls: "stun:stun.schlund.de" },
