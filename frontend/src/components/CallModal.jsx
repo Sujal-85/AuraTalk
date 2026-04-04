@@ -84,11 +84,29 @@ const CallModal = ({
 
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
+      console.log("[CallModal] Setting remote stream:", remoteStream, "Tracks:", remoteStream.getTracks().map(t => ({kind: t.kind, enabled: t.enabled, muted: t.muted})));
       remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current
-        .play()
-        .then(() => console.log("[CallModal] Remote video play started"))
-        .catch((err) => console.error("[CallModal] Remote video play failed:", err));
+      
+      // Force play with multiple attempts
+      const attemptPlay = async () => {
+        try {
+          await remoteVideoRef.current.play();
+          console.log("[CallModal] Remote video playing successfully");
+        } catch (err) {
+          console.error("[CallModal] Remote video play failed:", err);
+          // Retry after a short delay
+          setTimeout(attemptPlay, 500);
+        }
+      };
+      
+      // Wait for metadata to load before playing
+      remoteVideoRef.current.onloadedmetadata = () => {
+        console.log("[CallModal] Remote video metadata loaded");
+        attemptPlay();
+      };
+      
+      // Also try playing immediately
+      attemptPlay();
     }
   }, [remoteStream]);
 

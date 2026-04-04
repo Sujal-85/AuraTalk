@@ -1452,14 +1452,20 @@ export const useChatStore = create(
           set({ peerConnectionRef: null });
         }
         if (localStream) {
+          console.log("[Call] Stopping local stream tracks...");
           localStream.getTracks().forEach((track) => {
             try {
-              if (track.readyState === "live") track.stop();
+              console.log("[Call] Stopping track:", track.kind, track.id, "readyState:", track.readyState);
+              if (track.readyState === "live") {
+                track.stop();
+                console.log("[Call] Track stopped:", track.kind);
+              }
             } catch (e) {
               console.warn("[Call] Error stopping local track:", e);
             }
           });
           set({ localStream: null });
+          console.log("[Call] Local stream cleared");
         }
       },
 
@@ -1523,8 +1529,12 @@ export const useChatStore = create(
         };
 
         pc.ontrack = (e) => {
-          console.log("[Call] ontrack event, remoteStream tracks:", e.streams[0]?.getTracks().map(t => t.kind), e.streams[0]);
-          setRemoteStream(e.streams[0]);
+          console.log("[Call] ontrack event fired!", e);
+          console.log("[Call] Remote stream received:", e.streams[0]);
+          console.log("[Call] Remote tracks:", e.streams[0]?.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, id: t.id })));
+          if (e.streams && e.streams[0]) {
+            setRemoteStream(e.streams[0]);
+          }
         };
 
         pc.oniceconnectionstatechange = () => {
@@ -1632,8 +1642,10 @@ export const useChatStore = create(
           setLocalStream(localStream);
           const pc = setupPeerConnection();
           localStream.getTracks().forEach((track) => {
+            console.log("[Call] Caller adding track:", track.kind, track.id, "enabled:", track.enabled);
             pc.addTrack(track, localStream);
           });
+          console.log("[Call] All tracks added, creating offer...");
 
           // Wait for remote description if we were doing a re-offer, but for a new call
           // we just create the offer.
@@ -1853,17 +1865,12 @@ export const useChatStore = create(
             }
           }
           setLocalStream(localStream);
-          setLocalStream(localStream);
           
           let pc = get().peerConnectionRef;
           if (!pc) pc = setupPeerConnection();
 
-          localStream.getTracks().forEach((track) => {
-            pc.addTrack(track, localStream);
-          });
-
-          // CRITICAL: Must set remote description (the offer) BEFORE creating an answer
-          // If we haven't set it yet, do it now.
+          // CRITICAL: Must set remote description (the offer) BEFORE adding tracks
+          // This ensures the transceivers are properly matched
           if (pc.signalingState !== "have-remote-offer") {
              try {
                 await pc.setRemoteDescription(new RTCSessionDescription(pendingCaller.offer));
@@ -1874,6 +1881,12 @@ export const useChatStore = create(
                 throw new Error("Failed to set remote description from caller.");
              }
           }
+
+          // Add tracks AFTER setting remote description so transceivers match
+          localStream.getTracks().forEach((track) => {
+            console.log("[Call] Adding track to PC:", track.kind, track.id);
+            pc.addTrack(track, localStream);
+          });
 
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
