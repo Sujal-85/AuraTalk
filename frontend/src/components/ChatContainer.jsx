@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useLayoutEffect, useCallback } from "react";
+import DOMPurify from "dompurify";
 import WhatsAppAudioPreview from "./WhatsAppAudioPreview";
 import { useChatStore } from "../store/useChatStore";
 import MessageInput from "./MessageInput";
